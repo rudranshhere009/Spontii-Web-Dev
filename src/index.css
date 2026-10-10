@@ -1,0 +1,144 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fredoka:wght@500;600;700&family=Caveat:wght@600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Instrument+Sans:wght@400..700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-logo: "Fredoka", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-handwritten: "Caveat", cursive;
+
+  --font-heading: "Bricolage Grotesque", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Instrument Sans", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-bg: #0c0a15;
+  --color-surface: #15111f;
+  --color-surface-2: #1b1628;
+  --color-surface-3: #231c33;
+  --color-border: #2e2640;
+  
+  /* CHANGE THESE TWO VALUES TO REMOVE NEON GLOW DEVIATIONS */
+  --color-mint: #00b37e;         /* A solid flat emerald/mint instead of neon neon neon */
+  --color-mint-soft: #142922;    /* Dark flat tinted solid background box, no alpha glow */
+  
+  --color-text: #f5f4f8;
+  --color-muted: #9490a3;
+  --color-muted-2: #6b6779;
+  --color-danger: #fca5a5;
+  --color-warning: #fb923c;
+}
+
+
+/*
+ * Themes. Dark is the default (tokens above, unchanged). A data-theme
+ * attribute on <html> re-points the same tokens, so every bg, text and
+ * border utility follows. data-theme="dark" on an element forces the dark
+ * tokens for that subtree (used over photos/video so overlay text stays
+ * readable). The attribute is set before React loads (index.html).
+ */
+:root {
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --color-bg: #f8f7fb;
+  --color-surface: #f3f1f7;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #e9e5f0;
+  --color-border: #e6e1ed;
+  --color-mint: #05714f;
+  --color-mint-soft: rgba(5, 113, 79, 0.1);
+  --color-text: #211d2b;
+  --color-muted: #625d70;
+  --color-muted-2: #6a6579;
+  --color-danger: #c53030;
+  --color-warning: #b9480c;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg: #0c0a15;
+  --color-surface: #15111f;
+  --color-surface-2: #1b1628;
+  --color-surface-3: #231c33;
+  --color-border: #2e2640;
+  --color-mint: #3eebae;
+  --color-mint-soft: rgba(62, 235, 174, 0.12);
+  --color-text: #f5f4f8;
+  --color-muted: #9490a3;
+  --color-muted-2: #6b6779;
+  --color-danger: #fca5a5;
+  --color-warning: #fb923c;
+}
+
+[data-theme] {
+  color: var(--color-text);
+}
+
+html, body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-3) transparent;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.text-gradient-mint {
+  background: linear-gradient(90deg, #055338, #8ef7d4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  
+}
+
+.glow-mint {
+  text-shadow: none ;
+}
+
+
+/* Hide scrollbars on horizontal carousels while keeping scroll/swipe. */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.animate-radar {
+  
+  animation: none !important;
+  box-shadow: none !important;
+}
+
+a, button, div, nav {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+}
+
+
+:root, [data-theme="dark"], [data-theme="light"] {
+  --color-mint-soft: #142922 !important; /* Flat background fallback without neon opacity */
+}
+
+/* Inbox micro-interactions: messages, panels and read-state changes. */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-rise-in {
+  animation: rise-in 0.22s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise-in { animation: none; }
+}

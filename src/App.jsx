@@ -1,0 +1,192 @@
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+
+import Navbar from './components/Navbar'
+
+import Home from './pages/Home'
+import Explore from './pages/Explore'
+import ActivityDetail from './pages/ActivityDetail'
+import Inbox from './pages/Inbox'
+import Profile from './pages/Profile'
+import CreatePlan from './pages/CreatePlan'
+import JoinRequests from './pages/JoinRequests'
+import ApplicantProfile from './pages/ApplicantProfile'
+
+import Login from './pages/Login'
+import Signup from './pages/Signup'
+
+import { useAuth } from './context/AuthContext'
+import { redirectTarget } from './lib/auth'
+
+/* Bottom padding lets the last content scroll clear of the floating Create button. */
+function ProtectedPage({ children }) {
+  const { isAuthenticated } = useAuth()
+  const location = useLocation()
+
+  if (!isAuthenticated) {
+    /*
+     * Remember where the user was going so Login can send them back.
+     */
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: location }}
+      />
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-bg text-text">
+      <Navbar />
+      <main className="pb-20 sm:pb-24">{children}</main>
+    </div>
+  )
+}
+
+/*
+ * Open to everyone (logged in or not), with the normal app chrome.
+ * What a logged-out visitor can see inside is decided by AppContext
+ * (public plans only) and the page's own locked states.
+ */
+function OpenPage({ children }) {
+  return (
+    <div className="min-h-screen bg-bg text-text">
+      <Navbar />
+      <main className="pb-20 sm:pb-24">{children}</main>
+    </div>
+  )
+}
+
+function PublicPage({ children }) {
+  const { isAuthenticated } = useAuth()
+  const location = useLocation()
+
+  if (isAuthenticated) {
+    return (
+      <Navigate
+        to={redirectTarget(location.state)}
+        replace
+      />
+    )
+  }
+
+  return children
+}
+
+function PublicHome() {
+  return (
+    <div className="min-h-screen bg-bg text-text">
+      <Navbar />
+      <main className="pb-20 sm:pb-24">
+        <Home />
+      </main>
+    </div>
+  )
+}
+
+export default function App() {
+  return (
+    <Routes>
+
+      {/* ================= LANDING PAGE ================= */}
+
+      <Route
+        path="/"
+        element={<PublicHome />}
+      />
+
+      {/* ================= AUTH ================= */}
+
+      <Route
+        path="/signup"
+        element={
+          <PublicPage>
+            <Signup />
+          </PublicPage>
+        }
+      />
+
+      <Route
+        path="/login"
+        element={
+          <PublicPage>
+            <Login />
+          </PublicPage>
+        }
+      />
+
+      {/* ================= PROTECTED PAGES ================= */}
+
+      <Route
+        path="/explore"
+        element={
+          <OpenPage>
+            <Explore />
+          </OpenPage>
+        }
+      />
+
+      <Route
+        path="/activities/:id"
+        element={
+          <OpenPage>
+            <ActivityDetail />
+          </OpenPage>
+        }
+      />
+
+      <Route
+        path="/inbox"
+        element={
+          <ProtectedPage>
+            <Inbox />
+          </ProtectedPage>
+        }
+      />
+
+      <Route
+        path="/profile"
+        element={
+          <ProtectedPage>
+            <Profile />
+          </ProtectedPage>
+        }
+      />
+
+      <Route
+        path="/create"
+        element={
+          <ProtectedPage>
+            <CreatePlan />
+          </ProtectedPage>
+        }
+      />
+
+      <Route
+        path="/join-requests"
+        element={
+          <ProtectedPage>
+            <JoinRequests />
+          </ProtectedPage>
+        }
+      />
+
+      <Route
+        path="/people/request/:requestId"
+        element={
+          <ProtectedPage>
+            <ApplicantProfile />
+          </ProtectedPage>
+        }
+      />
+
+      {/* ================= FALLBACK ================= */}
+
+      <Route
+        path="*"
+        element={<Navigate to="/" replace />}
+      />
+
+    </Routes>
+  )
+}
