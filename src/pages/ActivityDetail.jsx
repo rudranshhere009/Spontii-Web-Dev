@@ -71,7 +71,7 @@ export default function ActivityDetail() {
         <button
           type="button"
           onClick={goBack}
-          className="flex items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-text"
+          className="-my-3 flex w-fit items-center gap-2 py-3 text-sm font-semibold text-muted transition-colors hover:text-text"
         >
           <ArrowLeftIcon className="h-4 w-4" />
           Back to Explore
@@ -244,7 +244,7 @@ export default function ActivityDetail() {
       <button
         type="button"
         onClick={goBack}
-        className="flex items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-text"
+        className="-my-3 flex w-fit items-center gap-2 py-3 text-sm font-semibold text-muted transition-colors hover:text-text"
       >
         <ArrowLeftIcon className="h-4 w-4" />
 
@@ -539,33 +539,11 @@ export default function ActivityDetail() {
 
           <div className="rounded-2xl border border-border bg-surface-2 p-5">
 
-            {/* PRICE */}
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-2xl font-extrabold">
-                  {activity.priceLabel}
-                </p>
-
-                <p className="text-sm text-muted">
-                  {activity.price === 0
-                    ? 'No ticket, just show up'
-                    : 'Per person'}
-                </p>
-
-              </div>
-
-
-            </div>
-
-
             {/* =================================================
                 DETAILS
             ================================================= */}
 
-            <div className="mt-4 space-y-3 rounded-xl bg-surface p-4 text-sm">
+            <div className="space-y-3 rounded-xl bg-surface p-4 text-sm">
 
               <Row
                 label="When"

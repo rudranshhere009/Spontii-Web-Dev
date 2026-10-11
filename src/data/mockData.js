@@ -320,7 +320,7 @@ export const activities = [
     venue: 'Viman Nagar Central Park',
 
     description:
-      'Mat-to-mat sunrise flow for all levels, followed by chai at the gate. Bring your own mat or rent one for ₹20.',
+      'Mat-to-mat sunrise flow for all levels, followed by chai at the gate. Bring your own mat.',
   },
 
   {
@@ -329,7 +329,6 @@ export const activities = [
     category: 'Sports',
     vibe: ['Energetic', 'Social'],
     tags: [
-      'Free to join',
       'Beginner friendly',
       'Energetic vibe',
     ],

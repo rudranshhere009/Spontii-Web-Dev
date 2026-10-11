@@ -219,7 +219,7 @@ export default function Profile() {
               STATS
           ================================================== */}
 
-          <div className="mt-8 grid grid-cols-2 border-t border-border pt-7 sm:grid-cols-5">
+          <div className="mt-8 grid grid-cols-2 gap-x-4 gap-y-6 border-t border-border pt-7 sm:grid-cols-5 sm:gap-0">
 
             <Stat
               value={profile.score}
@@ -422,7 +422,7 @@ export default function Profile() {
 
               <Link
                 to="/explore"
-                className="hidden items-center gap-1.5 text-sm font-semibold text-muted transition-colors hover:text-text sm:flex"
+                className="-my-2.5 hidden items-center gap-1.5 py-2.5 text-sm font-semibold text-muted transition-colors hover:text-text sm:flex"
               >
                 Find another
                 <ArrowRightIcon className="h-4 w-4" />
@@ -814,7 +814,7 @@ function Stat({
   mint = false,
 }) {
   return (
-    <div className="border-r border-border px-4 first:pl-0 last:border-r-0 sm:px-6">
+    <div className="sm:border-r sm:border-border sm:px-6 sm:first:pl-0 sm:last:border-r-0">
 
       <p
         className={`text-2xl font-extrabold sm:text-3xl ${

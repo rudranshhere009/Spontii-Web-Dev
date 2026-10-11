@@ -125,7 +125,8 @@ a, button, div, nav {
 }
 
 
-:root, [data-theme="dark"], [data-theme="light"] {
+/* Dark theme only: light keeps its own soft tint so mint text stays readable. */
+:root:not([data-theme="light"]), [data-theme="dark"] {
   --color-mint-soft: #142922 !important; /* Flat background fallback without neon opacity */
 }
 

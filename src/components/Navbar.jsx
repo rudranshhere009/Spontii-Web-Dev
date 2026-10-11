@@ -55,31 +55,39 @@ function TabTooltip({ children, left = false }) {
   );
 }
 
+/* One tab of the mobile bottom bar: icon over label, mint when active. */
 function MobileNavItem({ to, icon: Icon, label, primary = false }) {
   return (
     <NavLink
       to={to}
+      end={to === "/"}
       className={({ isActive }) =>
-        `flex min-w-0 flex-col items-center gap-1 rounded-xl py-1.5 text-[11px] font-semibold transition-colors ${
-          isActive ? "text-text" : "text-muted hover:text-text"
+        `group relative flex min-w-0 flex-col items-center justify-center gap-1 text-[11px] leading-none transition-colors focus-visible:outline-none ${
+          isActive
+            ? "font-bold text-mint"
+            : `font-semibold ${primary ? "text-text" : "text-muted hover:text-text"}`
         }`
       }
     >
       {({ isActive }) => (
         <>
+          {!primary && (
+            <span
+              aria-hidden
+              className={`absolute top-0 h-0.5 w-8 rounded-full bg-mint transition-opacity duration-200 ${
+                isActive ? "opacity-100" : "opacity-0"
+              }`}
+            />
+          )}
           <span
             aria-hidden
-            className={`flex h-7 w-7 items-center justify-center rounded-full ${
-              primary
-                ? "bg-mint text-bg"
-                : isActive
-                  ? "bg-text/10 text-mint"
-                  : ""
+            className={`flex items-center justify-center rounded-full transition-colors group-focus-visible:ring-2 group-focus-visible:ring-mint/60 ${
+              primary ? "h-9 w-9 bg-mint text-bg" : "h-9 w-11"
             }`}
           >
-            <Icon className="h-[18px] w-[18px]" />
+            <Icon className={primary ? "h-5 w-5 stroke-[2.5]" : "h-[22px] w-[22px]"} />
           </span>
-          {label}
+          <span className="max-w-full truncate">{label}</span>
         </>
       )}
     </NavLink>
@@ -362,24 +370,31 @@ export default function Navbar() {
         </div>
       </div>
 
-      <nav className="grid grid-cols-5 gap-1 border-t border-border/60 px-2 py-1.5 md:hidden">
+    </header>
 
+    {/* Mobile bottom bar. Outside <header> so `fixed` is relative to the
+        viewport; safe-area padding keeps it above the system home bar. */}
+    <nav
+      aria-label="Primary"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg/95 pb-[env(safe-area-inset-bottom)] md:hidden"
+    >
+      <div className="mx-auto grid h-16 max-w-md grid-cols-5 px-1">
         <MobileNavItem to="/" icon={HomeIcon} label="Home" />
         <MobileNavItem to="/explore" icon={CompassIcon} label="Explore" />
         <MobileNavItem to="/create" icon={PlusIcon} label="Create" primary />
         <MobileNavItem to="/inbox" icon={ChatIcon} label="Inbox" />
         <MobileNavItem to="/profile" icon={UserIcon} label="Profile" />
-      </nav>
-    </header>
+      </div>
+    </nav>
 
-    {/* Floating Create Plan button. Rendered outside <header>: its backdrop-blur
-        would otherwise make `fixed` relative to the header. /create itself
-        handles the login redirect for logged-out visitors. */}
+    {/* Floating Create Plan button (tablet/desktop; phones use the bottom bar).
+        Rendered outside <header>: its backdrop-blur would otherwise make `fixed`
+        relative to the header. /create handles the login redirect. */}
     {pathname !== "/create" && (
       <NavLink
         to="/create"
         aria-label="Create Plan"
-        className="group fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full border border-mint bg-mint text-bg shadow-lg shadow-mint/30 transition-[background-color,transform] duration-150 hover:scale-105 hover:bg-mint/90 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] sm:right-6"
+        className="group fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-40 hidden h-14 w-14 items-center justify-center rounded-full border border-mint bg-mint text-bg shadow-lg shadow-mint/30 transition-[background-color,transform] duration-150 hover:scale-105 hover:bg-mint/90 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] sm:right-6 md:flex"
       >
         <PlusIcon className="h-6 w-6 stroke-[2.5]" />
         <TabTooltip left>Create Plan</TabTooltip>

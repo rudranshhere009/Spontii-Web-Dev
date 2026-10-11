@@ -259,7 +259,7 @@ export default function Home() {
 
               <Link
                 to="/explore"
-                className="flex items-center gap-1.5 text-sm font-semibold text-muted transition-colors hover:text-text"
+                className="-my-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2.5 text-sm font-semibold text-muted transition-colors hover:text-text"
               >
                 See all
                 <ArrowRightIcon className="h-4 w-4" />
@@ -344,7 +344,7 @@ export default function Home() {
 
             <Link
               to="/profile"
-              className="flex items-center gap-1.5 text-sm font-semibold text-muted transition-colors hover:text-text"
+              className="-my-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2.5 text-sm font-semibold text-muted transition-colors hover:text-text"
             >
               Your passport
               <ArrowRightIcon className="h-4 w-4" />
@@ -382,7 +382,7 @@ export default function Home() {
 
             <Link
               to="/explore"
-              className="flex items-center gap-1.5 text-sm font-semibold text-muted transition-colors hover:text-text"
+              className="-my-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2.5 text-sm font-semibold text-muted transition-colors hover:text-text"
             >
               Explore all
               <ArrowRightIcon className="h-4 w-4" />

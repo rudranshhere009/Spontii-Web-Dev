@@ -168,8 +168,6 @@ function QuickDropForm() {
       area,
       location: area,
       distance: '0.0 km',
-      price: 0,
-      priceLabel: 'Free',
       badge: when.toUpperCase(),
       capacity: 6,
       going: [currentUser],
@@ -317,7 +315,6 @@ function FullPlanForm() {
     venue: '',
     date: 'Today',
     time: '',
-    price: '',
     description: '',
     access: 'public',
     capacity: CAPACITY_DEFAULT,
@@ -338,7 +335,6 @@ function FullPlanForm() {
     }))
   }
 
-  const priceNumPreview = Number(form.price) || 0
   const accessOption =
     ACCESS_OPTIONS.find((a) => a.id === form.access) || ACCESS_OPTIONS[0]
 
@@ -354,7 +350,6 @@ function FullPlanForm() {
     }
 
     const id = `plan-${Date.now()}`
-    const priceNum = Number(form.price) || 0
 
     addActivity({
       id,
@@ -371,8 +366,6 @@ function FullPlanForm() {
       area: form.location.trim(),
       location: form.location.trim(),
       distance: '0.0 km',
-      price: priceNum,
-      priceLabel: priceNum > 0 ? `₹${priceNum}` : 'Free',
       badge:
         form.date === 'Today'
           ? 'TONIGHT'
@@ -404,35 +397,21 @@ function FullPlanForm() {
         />
       </Section>
 
-      {/* Category + Price */}
-      <div className="grid grid-cols-1 gap-10 sm:grid-cols-2 sm:gap-6">
-        <Section label="Category" htmlFor="full-category">
-          <select
-            id="full-category"
-            value={form.category}
-            onChange={(e) => update('category', e.target.value)}
-            className={FIELD}
-          >
-            {categories
-              .filter((c) => c !== 'Everything')
-              .map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-          </select>
-        </Section>
-
-        <Section label="Price (₹, 0 = free)" htmlFor="full-price">
-          <input
-            id="full-price"
-            type="number"
-            min="0"
-            value={form.price}
-            onChange={(e) => update('price', e.target.value)}
-            placeholder="0"
-            className={FIELD}
-          />
-        </Section>
-      </div>
+      {/* Category */}
+      <Section label="Category" htmlFor="full-category">
+        <select
+          id="full-category"
+          value={form.category}
+          onChange={(e) => update('category', e.target.value)}
+          className={FIELD}
+        >
+          {categories
+            .filter((c) => c !== 'Everything')
+            .map((c) => (
+              <option key={c}>{c}</option>
+            ))}
+        </select>
+      </Section>
 
       {/* Who can join? */}
       <Section label="Who can join?">
@@ -641,8 +620,7 @@ function FullPlanForm() {
               <p className="flex items-start gap-1.5">
                 <UsersIcon className="mt-[3px] h-3.5 w-3.5 shrink-0" />
                 <span>
-                  Up to {form.capacity} · {form.vibe} vibe ·{' '}
-                  {priceNumPreview > 0 ? `₹${priceNumPreview}` : 'Free'}
+                  Up to {form.capacity} · {form.vibe} vibe
                 </span>
               </p>
             </div>
@@ -696,7 +674,7 @@ export default function CreatePlan() {
             ? navigate(-1)
             : navigate('/')
         }
-        className="flex items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-text"
+        className="-my-3 flex w-fit items-center gap-2 py-3 text-sm font-semibold text-muted transition-colors hover:text-text"
       >
         <ArrowLeftIcon className="h-4 w-4" />
         Back

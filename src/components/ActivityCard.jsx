@@ -53,12 +53,9 @@ export default function ActivityCard({ activity, featured = false }) {
           className={`w-full object-cover ${featured ? 'h-72' : 'h-44'}`}
           loading="lazy"
         />
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3">
+        <div className="absolute inset-x-0 top-0 flex items-center p-3">
           <span className="rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-mint backdrop-blur">
             {activity.badge}
-          </span>
-          <span className="rounded-full bg-black/60 px-2.5 py-1 text-xs font-bold text-text backdrop-blur">
-            {activity.priceLabel}
           </span>
         </div>
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3 pt-10">
@@ -121,7 +118,7 @@ export default function ActivityCard({ activity, featured = false }) {
             )}
             <Link
               to={`/activities/${activity.id}`}
-              className={`flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-sm font-bold transition-colors ${
+              className={`flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-4 sm:h-9 text-sm font-bold transition-colors ${
                 going
                   ? 'bg-mint text-bg'
                   : 'bg-text/10 text-text hover:bg-mint hover:text-bg'

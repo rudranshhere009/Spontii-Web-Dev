@@ -17,7 +17,7 @@ import Signup from './pages/Signup'
 import { useAuth } from './context/AuthContext'
 import { redirectTarget } from './lib/auth'
 
-/* Bottom padding lets the last content scroll clear of the floating Create button. */
+/* Bottom padding keeps the last content clear of the mobile bottom bar and the floating Create button. */
 function ProtectedPage({ children }) {
   const { isAuthenticated } = useAuth()
   const location = useLocation()
@@ -38,7 +38,7 @@ function ProtectedPage({ children }) {
   return (
     <div className="min-h-screen bg-bg text-text">
       <Navbar />
-      <main className="pb-20 sm:pb-24">{children}</main>
+      <main className="pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-24">{children}</main>
     </div>
   )
 }
@@ -52,7 +52,7 @@ function OpenPage({ children }) {
   return (
     <div className="min-h-screen bg-bg text-text">
       <Navbar />
-      <main className="pb-20 sm:pb-24">{children}</main>
+      <main className="pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-24">{children}</main>
     </div>
   )
 }
@@ -77,7 +77,7 @@ function PublicHome() {
   return (
     <div className="min-h-screen bg-bg text-text">
       <Navbar />
-      <main className="pb-20 sm:pb-24">
+      <main className="pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-24">
         <Home />
       </main>
     </div>

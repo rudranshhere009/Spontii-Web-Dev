@@ -106,7 +106,7 @@ export default function ApplicantProfile() {
 
       <Link
         to="/join-requests"
-        className="flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-text"
+        className="-my-3 flex w-fit items-center gap-2 py-3 text-sm font-semibold text-muted transition-colors hover:text-text"
       >
         <ArrowRightIcon className="h-4 w-4 rotate-180" />
         Back to Join Requests
@@ -333,7 +333,7 @@ function Signal({ icon: Icon, label, value }) {
 
       <div className="mt-2 flex items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-mint" />
-        <p className="truncate text-sm font-semibold">
+        <p className="min-w-0 text-sm font-semibold sm:truncate">
           {value}
         </p>
       </div>

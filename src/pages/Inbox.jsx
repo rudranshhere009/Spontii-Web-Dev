@@ -206,7 +206,7 @@ export default function Inbox() {
                 key={active.id}
                 ref={panelRef}
                 onKeyDown={(e) => e.key === 'Escape' && closeChat()}
-                className="animate-rise-in flex h-[calc(100dvh-20rem)] min-h-[340px] scroll-mt-56 flex-col overflow-hidden rounded-2xl border border-border bg-surface-2 md:scroll-mt-40 lg:h-[600px] lg:scroll-mt-28"
+                className="animate-rise-in flex h-[calc(100dvh-15rem-env(safe-area-inset-bottom))] min-h-[340px] scroll-mt-36 flex-col overflow-hidden rounded-2xl border border-border bg-surface-2 md:h-[calc(100dvh-20rem)] lg:h-[600px] lg:scroll-mt-28"
               >
                 <div className="flex items-center gap-3 border-b border-border px-3 py-3 sm:px-4">
                   <button
@@ -337,7 +337,7 @@ export default function Inbox() {
                 type="button"
                 onClick={markUpdatesRead}
                 disabled={unreadUpdates === 0}
-                className="rounded-md px-1.5 py-1 text-xs font-semibold text-muted transition-colors hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 disabled:cursor-default disabled:text-muted-2 disabled:hover:text-muted-2"
+                className="-my-1 rounded-md px-1.5 py-2 text-xs font-semibold text-muted transition-colors hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 disabled:cursor-default disabled:text-muted-2 disabled:hover:text-muted-2"
               >
                 Mark read
               </button>
@@ -436,7 +436,7 @@ export default function Inbox() {
                           onClick={() => setOpenTrust(open ? null : id)}
                           aria-expanded={open}
                           aria-controls={open ? `trust-more-${id}` : undefined}
-                          className="mt-1.5 inline-flex items-center gap-1 rounded text-xs font-semibold text-mint transition-colors hover:text-mint/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
+                          className="-my-1 mt-0.5 inline-flex items-center gap-1 rounded py-2 text-xs font-semibold text-mint transition-colors hover:text-mint/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
                         >
                           {open ? 'Show less' : 'Learn more'}
                           <ChevronDownIcon className={`h-3 w-3 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />

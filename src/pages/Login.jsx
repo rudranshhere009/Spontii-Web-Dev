@@ -161,7 +161,7 @@ export default function Login() {
                       (previous) => !previous,
                     )
                   }
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted transition hover:text-text"
+                  className="absolute right-1.5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full text-muted transition hover:text-text"
                   aria-label={
                     showPassword
                       ? 'Hide password'
