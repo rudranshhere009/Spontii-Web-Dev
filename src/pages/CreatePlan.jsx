@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { categories } from '../data/mockData'
 import { useApp } from '../context/AppContext'
-import { imageForCategory } from '../lib/activities'
+import { GENDER_OPTIONS, imageForCategory } from '../lib/activities'
 import {
   ZapIcon,
   ListIcon,
@@ -46,7 +46,7 @@ const ACCESS_OPTIONS = [
     id: 'private',
     label: 'Private',
     icon: LockIcon,
-    help: 'Listed under Private activities. Only people you approve can join.',
+    help: 'Listed under Private activities. Anyone can see it, but people need an account to request, and only people you approve can join.',
   },
 ]
 
@@ -317,6 +317,7 @@ function FullPlanForm() {
     time: '',
     description: '',
     access: 'public',
+    genderPreference: 'any',
     capacity: CAPACITY_DEFAULT,
     vibe: 'Social',
   })
@@ -356,6 +357,7 @@ function FullPlanForm() {
       title: form.title.trim(),
       category: form.category,
       ...(form.access === 'private' && { visibility: 'private' }),
+      genderPreference: form.genderPreference,
       vibe: [form.vibe],
       tags: ['New plan', 'Hosted by you'],
       image: imageForCategory(form.category),
@@ -438,6 +440,26 @@ function FullPlanForm() {
 
         <p className="mt-3 text-sm leading-relaxed text-muted">
           {accessOption.help}
+        </p>
+      </Section>
+
+      {/* Who's it for? (host's preferred group, never the host's gender) */}
+      <Section label="Who's it for?">
+        <div role="group" aria-label="Who's it for?" className="flex flex-wrap gap-2.5">
+          {GENDER_OPTIONS.map((option) => (
+            <Pill
+              key={option.id}
+              active={form.genderPreference === option.id}
+              onClick={() => update('genderPreference', option.id)}
+            >
+              {option.label}
+            </Pill>
+          ))}
+        </div>
+
+        <p className="mt-3 text-sm leading-relaxed text-muted">
+          The group you'd like to meet, not your own gender. It's shown to
+          everyone before they request, and you still review every request.
         </p>
       </Section>
 
@@ -621,6 +643,8 @@ function FullPlanForm() {
                 <UsersIcon className="mt-[3px] h-3.5 w-3.5 shrink-0" />
                 <span>
                   Up to {form.capacity} · {form.vibe} vibe
+                  {form.genderPreference !== 'any' &&
+                    ` · For ${form.genderPreference}`}
                 </span>
               </p>
             </div>

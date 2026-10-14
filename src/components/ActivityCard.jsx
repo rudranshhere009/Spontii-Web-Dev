@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import AvatarStack from './AvatarStack'
 import { useApp } from '../context/AppContext'
-import { useAuth } from '../context/AuthContext'
+import { genderPreferenceTag } from '../lib/activities'
 import {
   ShieldCheckIcon,
   CheckIcon,
@@ -28,15 +28,14 @@ const STATUS_ICON = {
 
 export default function ActivityCard({ activity, featured = false }) {
   const { getParticipation } = useApp()
-  const { isAuthenticated } = useAuth()
 
   /*
    * Joining always goes through ActivityDetail → request → host approval.
-   * Logged-out visitors get no personal state.
+   * Participation follows the viewer: a member, this device's guest, or
+   * nobody (status 'none').
    */
-  const participation = isAuthenticated
-    ? getParticipation(activity.id)
-    : { status: 'none', spotsLeft: Math.max(activity.capacity - activity.going.length, 0) }
+  const participation = getParticipation(activity.id)
+  const genderTag = genderPreferenceTag(activity)
 
   const { status, spotsLeft } = participation
   const going = status === 'going' || status === 'hosting'
@@ -89,6 +88,11 @@ export default function ActivityCard({ activity, featured = false }) {
         </div>
 
         <div className="mt-3 flex flex-wrap gap-1.5">
+          {genderTag && (
+            <span className="rounded-md border border-mint/40 px-2 py-0.5 text-[11px] font-semibold text-mint">
+              {genderTag}
+            </span>
+          )}
           {activity.tags.map((t) => (
             <span
               key={t}

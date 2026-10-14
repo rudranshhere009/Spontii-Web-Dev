@@ -7,10 +7,9 @@ import { categories, vibes } from "../data/mockData";
 import { useApp } from "../context/AppContext";
 
 import AvatarStack from "../components/AvatarStack";
-import LockedState from "../components/LockedState";
 import { useAuth } from "../context/AuthContext";
 
-import { isPrivateActivity } from "../lib/activities";
+import { genderPreferenceTag, isPrivateActivity } from "../lib/activities";
 
 import {
   MapPinIcon,
@@ -18,6 +17,7 @@ import {
   ClockIcon,
   ArrowRightIcon,
   ChevronDownIcon,
+  LockIcon,
 } from "../components/NavIcons";
 
 const PRIVATE_INITIAL = 3;
@@ -405,9 +405,16 @@ export default function Explore() {
                   </div>
 
                   <div className="flex flex-1 flex-col p-3.5">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-mint">
-                      {activity.category}
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-mint">
+                        {activity.category}
+                      </p>
+                      {genderPreferenceTag(activity) && (
+                        <span className="shrink-0 rounded-md border border-mint/40 px-1.5 py-0.5 text-[10px] font-semibold text-mint">
+                          {genderPreferenceTag(activity)}
+                        </span>
+                      )}
+                    </div>
                     <h3 className="mt-1 line-clamp-2 text-base font-extrabold leading-snug">
                       {activity.title}
                     </h3>
@@ -494,10 +501,16 @@ export default function Explore() {
           </div>
         </div>
 
+        {!isAuthenticated && (
+          <p className="flex items-center gap-2 text-sm text-muted">
+            <LockIcon className="h-4 w-4 shrink-0 text-mint" />
+            Anyone can browse private plans. Log in or create an account to
+            request to join one.
+          </p>
+        )}
+
         {/* AIRBNB RESPONSIVE COMPACT CARD FEED GRID CONTAINER */}
-        {!isAuthenticated ? (
-          <LockedState />
-        ) : privateActivities.length === 0 ? (
+        {privateActivities.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-border p-10 text-center bg-surface-2/30">
             <p className="font-semibold text-text">
               No matches for this category.
@@ -539,9 +552,16 @@ export default function Explore() {
                       <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-mint">
                         {activity.category}
                       </p>
-                      <span className="rounded-md border border-mint/30 bg-mint-soft px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-mint">
-                        Private
-                      </span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {genderPreferenceTag(activity) && (
+                          <span className="rounded-md border border-mint/40 px-1.5 py-0.5 text-[10px] font-semibold text-mint">
+                            {genderPreferenceTag(activity)}
+                          </span>
+                        )}
+                        <span className="rounded-md border border-mint/30 bg-mint-soft px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-mint">
+                          Private
+                        </span>
+                      </div>
                     </div>
 
                     <h3 className="mt-2 line-clamp-2 text-xl font-extrabold leading-snug tracking-tight text-text group-hover:text-mint transition-colors">

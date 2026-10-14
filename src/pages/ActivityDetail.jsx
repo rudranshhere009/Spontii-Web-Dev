@@ -1,11 +1,16 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { useApp } from '../context/AppContext'
 import { useAuth } from '../context/AuthContext'
 
 import AvatarStack from '../components/AvatarStack'
-import LockedState from '../components/LockedState'
+import { GuestJoinDialog, RequestSentDialog } from '../components/JoinDialogs'
+import {
+  genderPreferenceLabel,
+  genderPreferenceOf,
+  isPrivateActivity,
+} from '../lib/activities'
 
 import {
   CalendarIcon,
@@ -20,6 +25,7 @@ import {
   CheckIcon,
   ArrowLeftIcon,
   ArrowRightIcon,
+  LockIcon,
 } from '../components/NavIcons'
 
 export default function ActivityDetail() {
@@ -31,14 +37,19 @@ export default function ActivityDetail() {
   const {
     activities,
     city,
+    guest,
+    createGuest,
     requestToJoin,
     getParticipation,
     getVisibleLocation,
-    isLockedActivity,
   } = useApp()
 
   const [shareState, setShareState] = useState(null)
   const [requestError, setRequestError] = useState(null)
+  // 'guest' (ask a logged-out visitor's first name) | 'sent' | null
+  const [dialog, setDialog] = useState(null)
+  // Focus target after a dialog closes (the action card shows the new status)
+  const actionCardRef = useRef(null)
 
   /*
    * Go back only if there is in-app history (React Router stores the
@@ -55,33 +66,6 @@ export default function ActivityDetail() {
   const activity = activities.find(
     (a) => a.id === id
   )
-
-  /* =========================================================
-     PRIVATE PLAN, LOGGED OUT
-
-     AppContext does not hand private plans to logged-out
-     viewers at all; we only learn that this id is private so we
-     can show the unlock prompt instead of "not found".
-  ========================================================= */
-
-  if (!activity && isLockedActivity(id)) {
-    return (
-      <div className="mx-auto max-w-2xl px-5 py-8 sm:px-6">
-
-        <button
-          type="button"
-          onClick={goBack}
-          className="-my-3 flex w-fit items-center gap-2 py-3 text-sm font-semibold text-muted transition-colors hover:text-text"
-        >
-          <ArrowLeftIcon className="h-4 w-4" />
-          Back to Explore
-        </button>
-
-        <LockedState className="mt-8" />
-
-      </div>
-    )
-  }
 
   /* =========================================================
      PLAN NOT FOUND
@@ -152,27 +136,65 @@ export default function ActivityDetail() {
 
   /* =========================================================
      REQUEST HANDLER
+
+     - Members: request → host approval (unchanged).
+     - Logged out, public plan: request as this device's guest
+       (first name only); same host approval.
+     - Logged out, private plan: log in / sign up first, then
+       come back to this plan.
+     The confirmation only opens when a new request was saved.
   ========================================================= */
+
+  const isPrivate = isPrivateActivity(activity)
+  const restricted = Boolean(activity.restricted)
+  const preference = genderPreferenceOf(activity)
+  const loginState = {
+    from: location,
+    notice: isPrivate
+      ? 'Create an account or log in to request to join this private plan.'
+      : 'Log in to request to join this plan with your Spontii profile.',
+  }
+
+  function sendRequest(applicant) {
+    const result = requestToJoin(activity.id, applicant)
+
+    if (!result?.success) {
+      setRequestError(result?.message || 'Could not send request.')
+      return
+    }
+
+    setRequestError(null)
+    setDialog(result.created ? 'sent' : null)
+  }
 
   function handleRequest() {
     if (hosting || pending || approved || isFull) {
       return
     }
 
-    /*
-     * Joining is a protected action: send logged-out visitors to log in,
-     * then bring them back here to request.
-     */
-    if (!isAuthenticated) {
-      navigate('/login', { state: { from: location } })
+    if (isAuthenticated) {
+      sendRequest()
       return
     }
 
-    const result = requestToJoin(activity.id)
+    if (isPrivate) {
+      navigate('/login', { state: loginState })
+      return
+    }
 
-    setRequestError(
-      result?.success ? null : result?.message || 'Could not send request.'
-    )
+    if (guest) {
+      sendRequest(guest)
+    } else {
+      setDialog('guest')
+    }
+  }
+
+  function submitGuest(name) {
+    const nextGuest = createGuest(name)
+
+    if (nextGuest) {
+      sendRequest(nextGuest)
+    }
   }
 
   /* =========================================================
@@ -470,6 +492,14 @@ export default function ActivityDetail() {
             </h3>
 
 
+            {restricted ? (
+              <p className="mt-4 flex items-center gap-2 text-sm text-muted">
+                <LockIcon className="h-4 w-4 shrink-0 text-mint" />
+                {activity.going.length}{' '}
+                {activity.going.length === 1 ? 'person is' : 'people are'}{' '}
+                going. Log in to see who.
+              </p>
+            ) : (
             <div className="mt-4 flex flex-wrap items-center gap-4">
 
               <AvatarStack
@@ -504,6 +534,7 @@ export default function ActivityDetail() {
               </p>
 
             </div>
+            )}
 
           </div>
 
@@ -537,7 +568,11 @@ export default function ActivityDetail() {
               MAIN ACTION CARD
           ================================================= */}
 
-          <div className="rounded-2xl border border-border bg-surface-2 p-5">
+          <div
+            ref={actionCardRef}
+            tabIndex={-1}
+            className="rounded-2xl border border-border bg-surface-2 p-5 outline-none"
+          >
 
             {/* =================================================
                 DETAILS
@@ -558,6 +593,12 @@ export default function ActivityDetail() {
 
 
               <Row
+                label="Who it's for"
+                value={genderPreferenceLabel(activity)}
+              />
+
+
+              <Row
                 label="Spots"
                 value={
                   spotsLeft > 0
@@ -573,6 +614,14 @@ export default function ActivityDetail() {
 
             </div>
 
+
+            {preference !== 'any' && !hosting && !approved && (
+              <p className="mt-4 text-xs leading-relaxed text-muted">
+                The host would like this plan to be for{' '}
+                <span className="font-semibold text-text">{preference}</span>.
+                Anyone can still send a request; the host reviews each one.
+              </p>
+            )}
 
             {/* =================================================
                 REQUEST TO JOIN
@@ -635,8 +684,25 @@ export default function ActivityDetail() {
             </button>
 
 
+            {!isAuthenticated && isPrivate && !requestError && (
+              <p className="mt-3 flex items-center gap-1.5 text-xs text-muted">
+                <LockIcon className="h-3.5 w-3.5 shrink-0 text-mint" />
+                Private plan: you'll need an account to request to join.
+              </p>
+            )}
+
+            {!isAuthenticated && !isPrivate && !pending && !requestError && (
+              <p className="mt-3 text-xs text-muted">
+                No account needed. You can request as a guest, or{' '}
+                <Link to="/login" state={loginState} className="font-semibold text-mint hover:underline">
+                  log in
+                </Link>
+                .
+              </p>
+            )}
+
             {requestError && (
-              <p className="mt-3 text-xs font-semibold text-danger">
+              <p role="alert" className="mt-3 text-xs font-semibold text-danger">
                 {requestError}
               </p>
             )}
@@ -662,19 +728,9 @@ export default function ActivityDetail() {
 
                     <p className="mt-1.5 text-xs leading-relaxed text-muted">
                       Your request is waiting for the host.
-                      They can review your profile,
-                      verification and reliability before
-                      approving you.
-                    </p>
-
-
-                    {/* =================================================
-                        NEW 12–24 HOUR MESSAGE
-                    ================================================= */}
-
-                    <p className="mt-2 text-xs font-semibold leading-relaxed text-mint">
-                      It takes 12–24 hours for the host to
-                      confirm your request to join.
+                      {isAuthenticated
+                        ? ' They can review your profile, verification and reliability before approving you.'
+                        : ' They can see the first name you shared before approving you.'}
                     </p>
 
 
@@ -847,6 +903,22 @@ export default function ActivityDetail() {
         </div>
 
       </div>
+
+      {dialog === 'guest' && (
+        <GuestJoinDialog
+          onClose={() => setDialog(null)}
+          onSubmit={submitGuest}
+          loginState={loginState}
+          returnFocusRef={actionCardRef}
+        />
+      )}
+
+      {dialog === 'sent' && (
+        <RequestSentDialog
+          onClose={() => setDialog(null)}
+          returnFocusRef={actionCardRef}
+        />
+      )}
 
     </div>
   )

@@ -25,6 +25,51 @@ export function isPrivateActivity(activity) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Participant preference                                                     */
+/*                                                                            */
+/* The host's preferred participant group, not the host's own gender. It is   */
+/* shown before anyone requests; it never blocks a request (the host still    */
+/* reviews every request). Plans without the field count as 'any'.            */
+/* -------------------------------------------------------------------------- */
+
+export const GENDER_OPTIONS = [
+  { id: 'any', label: 'Any gender' },
+  { id: 'women', label: 'Women' },
+  { id: 'men', label: 'Men' },
+]
+
+export function genderPreferenceOf(activity) {
+  return GENDER_OPTIONS.some((o) => o.id === activity?.genderPreference)
+    ? activity.genderPreference
+    : 'any'
+}
+
+export function genderPreferenceLabel(activity) {
+  const id = genderPreferenceOf(activity)
+  return GENDER_OPTIONS.find((o) => o.id === id).label
+}
+
+/* Short card label, only when the host chose a specific group. */
+export function genderPreferenceTag(activity) {
+  const id = genderPreferenceOf(activity)
+  return id === 'any' ? null : `For ${id}`
+}
+
+/* -------------------------------------------------------------------------- */
+/* Guests                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Initials avatar for guests (no photo is invented for them). Inline SVG,
+ * so no image service is involved.
+ */
+export function initialsAvatar(name) {
+  const initial = (String(name ?? '').trim()[0] || '?').toUpperCase()
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#231c33"/><text x="32" y="41" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#3eebae" text-anchor="middle">${initial.replace(/[<>&"]/g, '')}</text></svg>`
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+}
+
+/* -------------------------------------------------------------------------- */
 /* Dates                                                                      */
 /* -------------------------------------------------------------------------- */
 

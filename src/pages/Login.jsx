@@ -101,6 +101,16 @@ export default function Login() {
             </p>
           </div>
 
+          {/* Why the visitor was sent here (e.g. joining a private plan) */}
+          {location.state?.notice && (
+            <p
+              role="status"
+              className="mb-6 rounded-xl border border-mint/30 bg-mint-soft px-4 py-3 text-sm leading-relaxed text-text"
+            >
+              {location.state.notice}
+            </p>
+          )}
+
           {/* Form */}
           <form
             onSubmit={handleSubmit}

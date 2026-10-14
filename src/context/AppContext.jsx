@@ -14,6 +14,7 @@ import {
 import { useAuth } from './AuthContext'
 import {
   imageForCategory,
+  initialsAvatar,
   isHost,
   isPrivateActivity,
   latestRequestFor,
@@ -32,6 +33,7 @@ const REQUESTS_KEY = 'spontii_join_requests_v1'
 const PROFILE_KEY = 'spontii_profile_v1'
 const CHATS_KEY = 'spontii_chats_v1'
 const UPDATES_KEY = 'spontii_updates_v1'
+const GUEST_KEY = 'spontii_guest_v1'
 
 /*
  * Note: 'spontii_joined_v1' is no longer read. Participation is derived
@@ -199,6 +201,16 @@ export function AppProvider({ children }) {
     return CITIES.includes(saved) ? saved : DEFAULT_CITY
   })
 
+  /*
+   * Logged-out visitors can request to join public plans as a guest. The
+   * guest (a first name + random id) is remembered on this device only, so
+   * repeat requests are recognised instead of duplicated.
+   */
+  const [guest, setGuest] = useState(() => {
+    const saved = loadJSON(GUEST_KEY, null)
+    return saved?.id && saved?.name ? saved : null
+  })
+
   const [notifOpen, setNotifOpen] = useState(false)
 
   const [hasUnreadNotifs, setHasUnreadNotifs] = useState(
@@ -243,49 +255,49 @@ export function AppProvider({ children }) {
   /* ------------------------------------------------------------------------ */
   /* Viewer access (enforced here, at the data source every page reads)       */
   /*                                                                          */
-  /* - Logged out: public plans only; no private plan data at all.            */
-  /* - Exact venue: only for the host and confirmed participants.             */
-  /* - Logged in: existing rules (private details visible, venue after        */
-  /*   host approval).                                                        */
+  /* Visibility and access are separate:                                      */
+  /* - Everyone can see public and private plans.                             */
+  /* - Logged out + private: safe preview only. Participants are anonymised   */
+  /*   (count kept) and `restricted` is set; joining needs an account.        */
+  /* - Exact venue: only for the host and confirmed participants (a guest     */
+  /*   approved on a public plan counts as a confirmed participant).          */
   /*                                                                          */
   /* This is client-side mock data, so it limits what the UI can read; it is  */
   /* not a substitute for server-side authorization.                          */
   /* ------------------------------------------------------------------------ */
 
+  // Who is looking: the member, this device's guest, or nobody yet.
+  const viewerId = isAuthenticated ? currentUser.id : guest?.id ?? null
+
   const activities = useMemo(() => {
     const canSeeVenue = (activity) =>
-      isAuthenticated &&
-      (isHost(activity, currentUser.id) ||
-        activity.going.some((person) => person.id === currentUser.id))
+      Boolean(viewerId) &&
+      (isHost(activity, viewerId) ||
+        activity.going.some((person) => person.id === viewerId))
 
-    return allActivities
-      .filter(
-        (activity) =>
-          isAuthenticated || !isPrivateActivity(activity)
-      )
-      .map((activity) => {
-        if (canSeeVenue(activity) || !('venue' in activity)) {
-          return activity
+    return allActivities.map((activity) => {
+      let visible = activity
+
+      if (!isAuthenticated && isPrivateActivity(activity)) {
+        visible = {
+          ...activity,
+          restricted: true,
+          going: activity.going.map((_, index) => ({
+            id: `hidden-${activity.id}-${index}`,
+            name: 'Spontii member',
+            avatar: initialsAvatar('S'),
+          })),
         }
+      }
 
-        const { venue: _hidden, ...withoutVenue } = activity
-        return withoutVenue
-      })
-  }, [allActivities, isAuthenticated, currentUser.id])
+      if (canSeeVenue(visible) || !('venue' in visible)) {
+        return visible
+      }
 
-  /*
-   * True only when a logged-out viewer hits a private plan: lets the UI
-   * show the unlock prompt without exposing anything about the plan.
-   */
-  function isLockedActivity(activityId) {
-    return (
-      !isAuthenticated &&
-      allActivities.some(
-        (activity) =>
-          activity.id === activityId && isPrivateActivity(activity)
-      )
-    )
-  }
+      const { venue: _hidden, ...withoutVenue } = visible
+      return withoutVenue
+    })
+  }, [allActivities, isAuthenticated, viewerId])
 
   /*
    * Derived: ids of activities the current user is a participant of.
@@ -293,17 +305,17 @@ export function AppProvider({ children }) {
   const joined = useMemo(
     () =>
       new Set(
-        !isAuthenticated
+        !viewerId
           ? []
           : activities
               .filter((activity) =>
                 activity.going.some(
-                  (person) => person.id === currentUser.id
+                  (person) => person.id === viewerId
                 )
               )
               .map((activity) => activity.id)
       ),
-    [activities, currentUser.id, isAuthenticated]
+    [activities, viewerId]
   )
 
   function findActivity(activityId) {
@@ -362,26 +374,78 @@ export function AppProvider({ children }) {
     return participationFor(
       activity,
       joinRequests[activityId] || [],
-      isAuthenticated ? userId : null
+      isAuthenticated ? userId : guest?.id ?? null
     )
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Guest identity                                                           */
+  /* ------------------------------------------------------------------------ */
+
+  /*
+   * Returns this device's guest, creating it on first use. Keeps the
+   * existing id so one device never turns into two applicants.
+   */
+  function createGuest(name) {
+    const clean = String(name ?? '').trim().slice(0, 40)
+
+    if (!clean) {
+      return null
+    }
+
+    const next = {
+      id:
+        guest?.id ||
+        `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: clean,
+      avatar: initialsAvatar(clean),
+      guest: true,
+      verified: false,
+      city,
+    }
+
+    setGuest(next)
+    saveJSON(GUEST_KEY, next)
+    return next
   }
 
   /* ------------------------------------------------------------------------ */
   /* Request to join                                                          */
   /* ------------------------------------------------------------------------ */
 
+  /*
+   * Returns { success, created, request } or { success: false, message }.
+   * `created` is true only when a new request was saved, so the UI shows
+   * its confirmation once and never for an existing pending request.
+   */
   function requestToJoin(
     activityId,
-    applicant = currentUser
+    applicant = isAuthenticated ? currentUser : guest
   ) {
-    if (!isAuthenticated) {
-      return { success: false, message: 'Log in to request to join.' }
-    }
-
     const activity = findActivity(activityId)
 
     if (!activity) {
       return { success: false, message: 'Plan not found.' }
+    }
+
+    /* Logged out: public plans only, and only as this device's guest. */
+    if (!isAuthenticated) {
+      if (isPrivateActivity(activity)) {
+        return {
+          success: false,
+          needsAccount: true,
+          message:
+            'Create an account or log in to request to join this private plan.',
+        }
+      }
+
+      if (!applicant?.guest) {
+        return {
+          success: false,
+          needsGuest: true,
+          message: 'Add your first name to send a request.',
+        }
+      }
     }
 
     const applicantId = applicant?.id
@@ -413,6 +477,7 @@ export function AppProvider({ children }) {
     if (participation.status === 'pending') {
       return {
         success: true,
+        created: false,
         request: participation.request,
       }
     }
@@ -471,7 +536,7 @@ export function AppProvider({ children }) {
       ],
     }))
 
-    return { success: true, request }
+    return { success: true, created: true, request }
   }
 
   /* ------------------------------------------------------------------------ */
@@ -759,7 +824,10 @@ export function AppProvider({ children }) {
     activities,
     created,
     addActivity,
-    isLockedActivity,
+
+    /* Guest (logged-out requests to public plans) */
+    guest,
+    createGuest,
 
     /* Participation (derived) */
     joined,
