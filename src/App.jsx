@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import Navbar from './components/Navbar'
@@ -12,15 +13,20 @@ import JoinRequests from './pages/JoinRequests'
 import ApplicantProfile from './pages/ApplicantProfile'
 
 import Login from './pages/Login'
-import Signup from './pages/Signup'
+
+const Signup = lazy(() => import('./pages/Signup'))
 
 import { useAuth } from './context/AuthContext'
 import { redirectTarget } from './lib/auth'
 
 /* Bottom padding keeps the last content clear of the mobile bottom bar and the floating Create button. */
 function ProtectedPage({ children }) {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, loading } = useAuth()
   const location = useLocation()
+
+  if (loading) {
+    return null
+  }
 
   if (!isAuthenticated) {
     /*
@@ -58,14 +64,24 @@ function OpenPage({ children }) {
 }
 
 function PublicPage({ children }) {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, loading, user } = useAuth()
   const location = useLocation()
 
+  if (loading) {
+    return null
+  }
+
   if (isAuthenticated) {
+    const onboardingAfterLogin =
+      location.pathname === '/login' &&
+      user?.profileCompletion < 100 &&
+      !location.state?.from
+
     return (
       <Navigate
-        to={redirectTarget(location.state)}
+        to={onboardingAfterLogin ? '/profile' : redirectTarget(location.state)}
         replace
+        state={onboardingAfterLogin ? { showProfileWelcome: true } : undefined}
       />
     )
   }
@@ -101,7 +117,9 @@ export default function App() {
         path="/signup"
         element={
           <PublicPage>
-            <Signup />
+            <Suspense fallback={null}>
+              <Signup />
+            </Suspense>
           </PublicPage>
         }
       />

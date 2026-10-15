@@ -1,8 +1,206 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
+import PhoneInput, { getCountryCallingCode } from 'react-phone-number-input'
 import { useAuth } from '../context/AuthContext'
-import { redirectTarget } from '../lib/auth'
 import logo from '../assets/logo.png'
+
+const countryFlags = import.meta.glob(
+  '../../node_modules/country-flag-icons/3x2/*.svg',
+  { eager: true, query: '?url&no-inline', import: 'default' },
+)
+
+function flagUrl(countryCode) {
+  return countryFlags[
+    `../../node_modules/country-flag-icons/3x2/${countryCode}.svg`
+  ]
+}
+
+function CountrySearchSelect({
+  value,
+  onChange,
+  options,
+  disabled,
+  'aria-label': ariaLabel,
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const containerRef = useRef(null)
+  const searchRef = useRef(null)
+  const triggerRef = useRef(null)
+
+  const countries = useMemo(
+    () =>
+      options
+        .filter((option) => /^[A-Z]{2}$/.test(option.value))
+        .map((option) => ({
+          ...option,
+          callingCode: getCountryCallingCode(option.value),
+        })),
+    [options],
+  )
+
+  const filteredCountries = useMemo(() => {
+    const search = query.trim().toLocaleLowerCase()
+
+    if (!search) return countries
+
+    return countries.filter(
+      ({ label, callingCode }) =>
+        label.toLocaleLowerCase().includes(search) ||
+        callingCode.includes(search.replace(/^\+/, '')),
+    )
+  }, [countries, query])
+
+  const selectedFlag = value ? flagUrl(value) : null
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    searchRef.current?.focus()
+
+    function closeOnOutsideClick(event) {
+      if (!containerRef.current?.contains(event.target)) {
+        setOpen(false)
+        setQuery('')
+      }
+    }
+
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    return () =>
+      document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [open])
+
+  function close() {
+    setOpen(false)
+    setQuery('')
+    triggerRef.current?.focus()
+  }
+
+  function chooseCountry(countryCode) {
+    onChange(countryCode)
+    close()
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="signup-country-picker"
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation()
+          close()
+        }
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        aria-label={ariaLabel || 'Choose country calling code'}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => (open ? close() : setOpen(true))}
+        className="signup-country-trigger"
+      >
+        {selectedFlag
+          ? <img
+              src={selectedFlag}
+              alt=""
+              className="signup-country-trigger-flag"
+            />
+          : <span aria-hidden="true">🌐</span>}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          fill="none"
+          className={`signup-country-chevron${open ? ' is-open' : ''}`}
+        >
+          <path d="m5 7.5 5 5 5-5" />
+        </svg>
+      </button>
+
+      <div
+        role="dialog"
+        aria-label="Choose a country"
+        aria-hidden={!open}
+        className={`signup-country-popover${open ? ' is-open' : ''}`}
+      >
+        <label className="signup-country-search-wrap">
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 20 20"
+            fill="none"
+            className="signup-country-search-icon"
+          >
+            <circle cx="8.75" cy="8.75" r="5.75" />
+            <path d="m13 13 4 4" />
+          </svg>
+          <input
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search countries..."
+            aria-label="Search countries"
+            tabIndex={open ? 0 : -1}
+            className="signup-country-search"
+          />
+          {query && (
+            <span className="signup-country-result-count" aria-live="polite">
+              {filteredCountries.length}
+            </span>
+          )}
+        </label>
+
+        <div className="signup-country-results" role="listbox" aria-label="Countries">
+          {filteredCountries.length ? (
+            filteredCountries.map((country) => (
+              <button
+                key={country.value}
+                type="button"
+                role="option"
+                aria-selected={country.value === value}
+                tabIndex={open ? 0 : -1}
+                onClick={() => chooseCountry(country.value)}
+                className="signup-country-option"
+              >
+                <CountryFlag country={country} />
+                <span className="signup-country-option-name">
+                  {country.label}
+                </span>
+                <span className="signup-country-option-code">
+                  +{country.callingCode}
+                </span>
+              </button>
+            ))
+          ) : (
+            <p className="signup-country-empty">No matching countries</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CountryFlag({ country }) {
+  const src = flagUrl(country.value)
+
+  if (!src) {
+    return (
+      <span className="signup-country-option-flag-fallback" aria-hidden="true">
+        {country.value}
+      </span>
+    )
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className="signup-country-option-flag"
+    />
+  )
+}
 
 function EyeIcon({ open }) {
   if (open) {
@@ -41,6 +239,7 @@ export default function Signup() {
   const { signup } = useAuth()
 
   const [name, setName] = useState('')
+  const [phone, setPhone] = useState()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] =
@@ -55,7 +254,7 @@ export default function Signup() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
 
     setError('')
@@ -67,19 +266,23 @@ export default function Signup() {
 
     setLoading(true)
 
-    const result = signup({
-      name,
-      email,
-      password,
-    })
-
-    if (!result.success) {
-      setError(result.message)
+    try {
+      await signup({
+        name,
+        phone,
+        email,
+        password,
+      })
+      navigate('/login', {
+        replace: true,
+        state: {
+          notice: 'Your account was created. Please log in to continue.',
+        },
+      })
+    } catch (submitError) {
+      setError(submitError.message)
       setLoading(false)
-      return
     }
-
-    navigate(redirectTarget(location.state), { replace: true })
   }
 
   return (
@@ -155,6 +358,32 @@ export default function Signup() {
 
             <div>
               <label
+                htmlFor="signup-phone"
+                className="mb-2 block text-sm font-semibold"
+              >
+                Phone number
+              </label>
+
+              <PhoneInput
+                defaultCountry="IN"
+                value={phone}
+                onChange={setPhone}
+                placeholder="Enter phone number"
+                countrySelectComponent={CountrySearchSelect}
+                countrySelectProps={{
+                  'aria-label': 'Country calling code',
+                }}
+                numberInputProps={{
+                  id: 'signup-phone',
+                  autoComplete: 'tel',
+                  required: true,
+                }}
+                className="signup-phone-input w-full rounded-xl border border-border bg-surface px-4 text-sm text-text outline-none transition focus-within:border-mint"
+              />
+            </div>
+
+            <div>
+              <label
                 htmlFor="signup-email"
                 className="mb-2 block text-sm font-semibold"
               >
@@ -195,9 +424,11 @@ export default function Signup() {
                   onChange={(event) =>
                     setPassword(event.target.value)
                   }
-                  placeholder="At least 6 characters"
+                  placeholder="At least 8 characters"
                   autoComplete="new-password"
                   required
+                  minLength={8}
+                  maxLength={128}
                   className="w-full rounded-xl border border-border bg-surface px-4 py-3.5 pr-12 text-sm text-text outline-none transition focus:border-mint"
                 />
 

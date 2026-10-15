@@ -1,8 +1,7 @@
-import { startTransition, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 import {
-  milestones,
   passportSignals,
 } from '../data/mockData'
 
@@ -22,6 +21,7 @@ import {
 } from '../components/NavIcons'
 
 import { useAuth } from '../context/AuthContext'
+import avatarPlaceholder from '../assets/avatar-placeholder.svg'
 
 export default function Profile() {
   const {
@@ -31,11 +31,29 @@ export default function Profile() {
     updateProfile,
   } = useApp()
 
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { logout, uploadProfilePhoto } = useAuth()
+
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(profile)
+  const [selectedPhoto, setSelectedPhoto] = useState(null)
+  const photoPreview = useMemo(
+    () => selectedPhoto ? URL.createObjectURL(selectedPhoto) : '',
+    [selectedPhoto],
+  )
+  const [profileError, setProfileError] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
+  const [welcomeOpen, setWelcomeOpen] = useState(
+    Boolean(location.state?.showProfileWelcome),
+  )
 
-  const navigate = useNavigate()
-  const { logout } = useAuth()
+  useEffect(() => {
+    return () => {
+      if (photoPreview) URL.revokeObjectURL(photoPreview)
+    }
+  }, [photoPreview])
 
   // ==================================================
   // LOGOUT
@@ -49,11 +67,14 @@ export default function Profile() {
    * replace: true drops /profile from history so Back can't return to it;
    * protected routes still guard themselves if reached any other way.
    */
-  function handleLogout() {
-    startTransition(() => {
-      logout()
+  async function handleLogout() {
+    setLogoutError('')
+    try {
+      await logout()
       navigate('/', { replace: true })
-    })
+    } catch (error) {
+      setLogoutError(error.message)
+    }
   }
 
   // ==================================================
@@ -67,6 +88,36 @@ export default function Profile() {
   const hostedPlans = activities.filter(
     (activity) => isHost(activity, profile.id)
   )
+  const completionMilestones = [
+    {
+      id: 'created',
+      icon: 'check',
+      title: 'Account created',
+      subtitle: '+20 Spontii Score',
+      reached: true,
+    },
+    {
+      id: 'half',
+      icon: 'star',
+      title: 'Profile 50% complete',
+      subtitle: '+45 Spontii Score',
+      reached: profile.profileCompletion >= 50,
+    },
+    {
+      id: 'almost',
+      icon: 'star',
+      title: 'Profile 75% complete',
+      subtitle: '+20 Spontii Score',
+      reached: profile.profileCompletion >= 75,
+    },
+    {
+      id: 'complete',
+      icon: 'star',
+      title: 'Profile complete',
+      subtitle: '+35 Spontii Score',
+      reached: profile.profileCompletion >= 100,
+    },
+  ]
 
   /*
    * Passport signals reflect the live profile instead of hard-coded
@@ -87,19 +138,49 @@ export default function Profile() {
       return signal
     })
 
+  function openEditor() {
+    setDraft(profile)
+    setSelectedPhoto(null)
+    setProfileError('')
+    setEditing(true)
+  }
+
+  function closeWelcome(openProfileEditor = false) {
+    setWelcomeOpen(false)
+    navigate(location.pathname, { replace: true, state: null })
+    if (openProfileEditor) openEditor()
+  }
+
   // ==================================================
   // PROFILE SAVE
   // ==================================================
 
-  function saveProfile(event) {
+  async function saveProfile(event) {
     event.preventDefault()
 
-    updateProfile({
-      name: draft.name.trim() || profile.name,
-      tagline: draft.tagline,
-      tags: draft.tags,
-    })
-    setEditing(false)
+    setProfileError('')
+    setSavingProfile(true)
+
+    try {
+      await updateProfile({
+        name: draft.name,
+        city: draft.city,
+        tagline: draft.tagline,
+        bio: draft.bio,
+        tags: draft.tags,
+      })
+
+      if (selectedPhoto) {
+        await uploadProfilePhoto(selectedPhoto)
+      }
+
+      setSelectedPhoto(null)
+      setEditing(false)
+    } catch (error) {
+      setProfileError(error.message)
+    } finally {
+      setSavingProfile(false)
+    }
   }
 
   // ==================================================
@@ -145,6 +226,14 @@ export default function Profile() {
                     {profile.name}
                   </h1>
 
+                  <button
+                    type="button"
+                    onClick={openEditor}
+                    className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-semibold text-muted transition-colors hover:border-mint/40 hover:text-mint"
+                  >
+                    {profile.avatar === avatarPlaceholder ? 'Add photo' : 'Edit photo'}
+                  </button>
+
                   {profile.verified && (
                     <span className="inline-flex items-center gap-1.5 rounded-full border border-mint/30 bg-mint-soft px-2.5 py-1 text-xs font-bold text-mint">
                       <ShieldCheckIcon className="h-3.5 w-3.5" />
@@ -156,12 +245,42 @@ export default function Profile() {
 
                 <div className="mt-2 flex items-center gap-1.5 text-sm text-muted">
                   <MapPinIcon className="h-4 w-4 shrink-0" />
-                  {profile.city}
+                  {profile.city || 'Add your city'}
                 </div>
 
                 <p className="mt-4 max-w-2xl text-base leading-relaxed text-muted">
-                  {profile.tagline}
+                  {profile.tagline || 'Add a short tagline to introduce yourself.'}
                 </p>
+
+                {profile.bio && (
+                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
+                    {profile.bio}
+                  </p>
+                )}
+
+                <p className="mt-2 text-xs text-muted">
+                  Spontiii ID <span className="ml-1 font-bold tracking-wide text-text">{profile.spontiiiId}</span>
+                </p>
+
+                <div className="mt-4 max-w-xl">
+                  <div className="mb-1.5 flex justify-between text-xs">
+                    <span className="font-semibold text-muted">Profile completion</span>
+                    <span className="font-bold text-mint">{profile.profileCompletion}%</span>
+                  </div>
+                  <div
+                    className="h-1.5 overflow-hidden rounded-full bg-surface-3"
+                    role="progressbar"
+                    aria-label="Profile completion"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={profile.profileCompletion}
+                  >
+                    <div
+                      className="h-full rounded-full bg-mint transition-all duration-500"
+                      style={{ width: `${profile.profileCompletion}%` }}
+                    />
+                  </div>
+                </div>
 
                 {/* TAGS */}
 
@@ -200,12 +319,15 @@ export default function Profile() {
 
               {/* EDIT PROFILE */}
 
+              {logoutError && (
+                <p role="alert" className="mt-4 text-sm text-danger">
+                  {logoutError}
+                </p>
+              )}
+
               <button
                 type="button"
-                onClick={() => {
-                  setDraft(profile)
-                  setEditing(true)
-                }}
+                onClick={openEditor}
                 className="inline-flex items-center justify-center rounded-xl border border-border px-5 py-3 text-sm font-bold text-text transition-colors hover:bg-text/5"
               >
                 Edit profile
@@ -577,7 +699,7 @@ export default function Profile() {
 
             <div className="mt-6 space-y-5">
 
-              {milestones.map((milestone) => (
+              {completionMilestones.map((milestone) => (
 
                 <Milestone
                   key={milestone.id}
@@ -648,9 +770,15 @@ export default function Profile() {
           </h2>
 
           <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">
-            Sign out of your Spontii account on this device.
+            Your profile information is saved to your Spontii account.
           </p>
 
+        </div>
+
+        <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
+          <AccountValue label="Email" value={profile.email} />
+          <AccountValue label="Phone" value={profile.phone} />
+          <AccountValue label="Spontiii ID" value={profile.spontiiiId} />
         </div>
 
         <button
@@ -662,6 +790,81 @@ export default function Profile() {
         </button>
 
       </section>
+
+      {welcomeOpen && profile.profileCompletion < 100 && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6"
+            onMouseDown={(event) =>
+              event.target === event.currentTarget && closeWelcome()
+            }
+          >
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="profile-welcome-title"
+              className="animate-rise-in relative my-auto max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl border border-border bg-surface-2 p-7 shadow-2xl"
+            >
+              <button
+                type="button"
+                onClick={() => closeWelcome()}
+                aria-label="Close profile reminder"
+                className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-text/5 hover:text-text"
+              >
+                <CloseIcon className="h-4 w-4" />
+              </button>
+
+              <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-mint-soft text-2xl">
+                ✨
+              </div>
+
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-mint">
+                Welcome to Spontiii
+              </p>
+              <h2
+                id="profile-welcome-title"
+                className="mt-2 pr-7 text-2xl font-extrabold tracking-tight"
+              >
+                Arigato, matee!
+              </h2>
+              <p className="mt-3 text-sm leading-relaxed text-muted">
+                Your account is ready. Complete your profile so people can get
+                to know the real you and feel confident making plans together.
+              </p>
+
+              <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-semibold">Your profile</span>
+                  <span className="font-extrabold text-mint">{profile.profileCompletion}%</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-3">
+                  <div
+                    className="h-full rounded-full bg-mint transition-all"
+                    style={{ width: `${profile.profileCompletion}%` }}
+                  />
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-muted">
+                  Add a photo, city, tagline, bio, and interests. Profile
+                  milestones can earn up to 120 Spontii Score.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => closeWelcome(true)}
+                className="mt-6 flex h-12 w-full items-center justify-center rounded-xl bg-mint px-4 text-sm font-bold text-bg transition-colors hover:bg-mint/90"
+              >
+                Complete my profile
+              </button>
+              <button
+                type="button"
+                onClick={() => closeWelcome()}
+                className="mt-3 flex h-10 w-full items-center justify-center text-sm font-semibold text-muted hover:text-text"
+              >
+                I’ll do this later
+              </button>
+            </section>
+          </div>
+        )}
 
       {/* ==================================================
           EDIT PROFILE MODAL
@@ -679,7 +882,7 @@ export default function Profile() {
               event.stopPropagation()
             }
             onSubmit={saveProfile}
-            className="w-full max-w-md rounded-2xl border border-border bg-surface-2 p-6 shadow-2xl"
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-surface-2 p-6 shadow-2xl"
           >
 
             {/* HEADER */}
@@ -715,35 +918,89 @@ export default function Profile() {
 
               {/* NAME */}
 
+              <div className="flex items-end gap-4">
+                <div className="min-w-0 flex-1">
+                  <label
+                    htmlFor="profile-name"
+                    className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted"
+                  >
+                    Name
+                  </label>
+                  <input
+                    id="profile-name"
+                    value={draft.name}
+                    maxLength={100}
+                    required
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        name: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded-xl border border-border bg-surface px-4 py-3 text-sm outline-none transition-colors focus:border-mint"
+                  />
+                </div>
+
+                <div className="shrink-0 text-center">
+                  <img
+                    src={photoPreview || profile.avatar || avatarPlaceholder}
+                    alt="Profile preview"
+                    className="mx-auto h-12 w-12 rounded-xl border border-border object-cover"
+                  />
+                  <label
+                    htmlFor="profile-photo"
+                    className="mt-1.5 block cursor-pointer text-xs font-bold text-mint hover:underline"
+                  >
+                    {profile.avatar === avatarPlaceholder && !selectedPhoto
+                      ? 'Add photo'
+                      : 'Edit photo'}
+                  </label>
+                  <input
+                    id="profile-photo"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="sr-only"
+                    onChange={(event) =>
+                      setSelectedPhoto(event.target.files?.[0] || null)
+                    }
+                  />
+                </div>
+              </div>
+
               <div>
-
-                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
-                  Name
+                <label
+                  htmlFor="profile-city"
+                  className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted"
+                >
+                  City
                 </label>
-
                 <input
-                  value={draft.name}
+                  id="profile-city"
+                  value={draft.city}
+                  maxLength={80}
                   onChange={(event) =>
                     setDraft((current) => ({
                       ...current,
-                      name: event.target.value,
+                      city: event.target.value,
                     }))
                   }
+                  placeholder="Where are you based?"
                   className="w-full rounded-xl border border-border bg-surface px-4 py-3 text-sm outline-none transition-colors focus:border-mint"
                 />
-
               </div>
 
               {/* TAGLINE */}
 
               <div>
 
-                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
+                <label htmlFor="profile-tagline" className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
                   Tagline
                 </label>
 
                 <input
+                  id="profile-tagline"
                   value={draft.tagline}
+                  maxLength={160}
                   onChange={(event) =>
                     setDraft((current) => ({
                       ...current,
@@ -755,15 +1012,39 @@ export default function Profile() {
 
               </div>
 
+              <div>
+                <label
+                  htmlFor="profile-bio"
+                  className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted"
+                >
+                  About you
+                </label>
+                <textarea
+                  id="profile-bio"
+                  value={draft.bio}
+                  maxLength={500}
+                  rows={3}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      bio: event.target.value,
+                    }))
+                  }
+                  placeholder="Tell people a little about yourself..."
+                  className="w-full resize-y rounded-xl border border-border bg-surface px-4 py-3 text-sm outline-none transition-colors focus:border-mint"
+                />
+              </div>
+
               {/* TAGS */}
 
               <div>
 
-                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
+                <label htmlFor="profile-tags" className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
                   Tags
                 </label>
 
                 <input
+                  id="profile-tags"
                   value={draft.tags.join(', ')}
                   onChange={(event) =>
                     setDraft((current) => ({
@@ -771,27 +1052,35 @@ export default function Profile() {
                       tags: event.target.value
                         .split(',')
                         .map((tag) => tag.trim())
-                        .filter(Boolean),
+                        .filter(Boolean)
+                        .slice(0, 12),
                     }))
                   }
                   className="w-full rounded-xl border border-border bg-surface px-4 py-3 text-sm outline-none transition-colors focus:border-mint"
                 />
 
                 <p className="mt-1.5 text-xs text-muted">
-                  Separate multiple tags with commas.
+                  Add up to 12 interests, separated by commas.
                 </p>
 
               </div>
 
             </div>
 
+            {profileError && (
+              <p role="alert" className="mt-4 text-sm font-medium text-danger">
+                {profileError}
+              </p>
+            )}
+
             {/* SAVE */}
 
             <button
               type="submit"
-              className="mt-6 flex w-full items-center justify-center rounded-xl bg-mint py-3 text-sm font-bold text-bg transition-colors hover:bg-mint/90"
+              disabled={savingProfile}
+              className="mt-6 flex w-full items-center justify-center rounded-xl bg-mint py-3 text-sm font-bold text-bg transition-colors hover:bg-mint/90 disabled:cursor-wait disabled:opacity-60"
             >
-              Save changes
+              {savingProfile ? 'Saving...' : 'Save changes'}
             </button>
 
           </form>
@@ -830,6 +1119,19 @@ function Stat({
         {label}
       </p>
 
+    </div>
+  )
+}
+
+function AccountValue({ label, value }) {
+  return (
+    <div className="rounded-xl border border-border bg-surface px-4 py-3">
+      <p className="text-[10px] font-bold uppercase tracking-wide text-muted">
+        {label}
+      </p>
+      <p className="mt-1 break-all text-sm font-semibold text-text">
+        {value || '—'}
+      </p>
     </div>
   )
 }
@@ -911,9 +1213,9 @@ function Milestone({
   milestone,
 }) {
   return (
-    <div className="flex items-center gap-3">
+    <div className={`flex items-center gap-3 ${milestone.reached ? '' : 'opacity-50'}`}>
 
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-surface-3 text-mint">
+      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-surface-3 ${milestone.reached ? 'text-mint' : 'text-muted'}`}>
 
         {milestone.icon === 'check' && (
           <ShieldCheckIcon className="h-4 w-4" />

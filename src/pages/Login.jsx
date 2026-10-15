@@ -49,24 +49,28 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
 
     setError('')
     setLoading(true)
 
-    const result = login({
-      email,
-      password,
-    })
+    try {
+      const user = await login({ email, password })
+      const target = redirectTarget(location.state)
 
-    if (!result.success) {
-      setError(result.message)
+      if (user.profileCompletion < 100 && target === '/') {
+        navigate('/profile', {
+          replace: true,
+          state: { showProfileWelcome: true },
+        })
+      } else {
+        navigate(target, { replace: true })
+      }
+    } catch (submitError) {
+      setError(submitError.message)
       setLoading(false)
-      return
     }
-
-    navigate(redirectTarget(location.state), { replace: true })
   }
 
   return (

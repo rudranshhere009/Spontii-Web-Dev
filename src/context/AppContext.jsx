@@ -12,6 +12,7 @@ import {
   updates as seedUpdates,
 } from '../data/mockData'
 import { useAuth } from './AuthContext'
+import avatarPlaceholder from '../assets/avatar-placeholder.svg'
 import {
   imageForCategory,
   initialsAvatar,
@@ -30,7 +31,6 @@ const AppContext = createContext(null)
 
 const CREATED_KEY = 'spontii_created_v1'
 const REQUESTS_KEY = 'spontii_join_requests_v1'
-const PROFILE_KEY = 'spontii_profile_v1'
 const CHATS_KEY = 'spontii_chats_v1'
 const UPDATES_KEY = 'spontii_updates_v1'
 const GUEST_KEY = 'spontii_guest_v1'
@@ -175,16 +175,16 @@ function loadJoinRequests() {
 /* -------------------------------------------------------------------------- */
 
 export function AppProvider({ children }) {
-  const { isAuthenticated } = useAuth()
+  const {
+    isAuthenticated,
+    user,
+    updateProfile: updateAuthenticatedProfile,
+  } = useAuth()
 
   const [created, setCreated] = useState(() => loadCreated())
 
   const [joinRequests, setJoinRequests] = useState(() =>
     loadJoinRequests()
-  )
-
-  const [profileEdits, setProfileEdits] = useState(() =>
-    loadJSON(PROFILE_KEY, {})
   )
 
   const [chats, setChats] = useState(() =>
@@ -222,12 +222,27 @@ export function AppProvider({ children }) {
   /* ------------------------------------------------------------------------ */
 
   const currentUser = useMemo(
-    () => ({
-      ...seedCurrentUser,
-      ...profileEdits,
-      id: seedCurrentUser.id,
-    }),
-    [profileEdits]
+    () => user
+      ? {
+          ...seedCurrentUser,
+          ...user,
+          id: user.id,
+          name: user.name,
+          avatar: user.avatar || avatarPlaceholder,
+          email: user.email,
+          phone: user.phone,
+          verified: false,
+          city: user.city || '',
+          tagline: user.tagline || '',
+          bio: user.bio || '',
+          tags: user.tags || [],
+          score: user.spontiiScore ?? 20,
+          reliability: 0,
+          attended: 0,
+          connections: 0,
+        }
+      : seedCurrentUser,
+    [user]
   )
 
   /* ------------------------------------------------------------------------ */
@@ -328,7 +343,6 @@ export function AppProvider({ children }) {
 
   useEffect(() => saveJSON(CREATED_KEY, created), [created])
   useEffect(() => saveJSON(REQUESTS_KEY, joinRequests), [joinRequests])
-  useEffect(() => saveJSON(PROFILE_KEY, profileEdits), [profileEdits])
   useEffect(() => saveJSON(CHATS_KEY, chats), [chats])
   useEffect(() => saveJSON(UPDATES_KEY, updates), [updates])
   useEffect(() => saveJSON(CITY_KEY, city), [city])
@@ -732,12 +746,7 @@ export function AppProvider({ children }) {
   /* ------------------------------------------------------------------------ */
 
   function updateProfile(fields) {
-    const { id: _ignored, ...rest } = fields || {}
-
-    setProfileEdits((previous) => ({
-      ...previous,
-      ...rest,
-    }))
+    return updateAuthenticatedProfile(fields)
   }
 
   /* ------------------------------------------------------------------------ */
