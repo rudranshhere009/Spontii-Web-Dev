@@ -20,3 +20,15 @@ CREATE TABLE IF NOT EXISTS clients (
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS email_verifications (
+  email VARCHAR(254) NOT NULL,
+  otp_hash VARCHAR(64) NOT NULL,
+  otp_expires_at DATETIME NOT NULL,
+  attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  last_sent_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (email)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;

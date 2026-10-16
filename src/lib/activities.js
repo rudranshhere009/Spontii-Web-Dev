@@ -65,7 +65,7 @@ export function genderPreferenceTag(activity) {
  */
 export function initialsAvatar(name) {
   const initial = (String(name ?? '').trim()[0] || '?').toUpperCase()
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#231c33"/><text x="32" y="41" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#3eebae" text-anchor="middle">${initial.replace(/[<>&"]/g, '')}</text></svg>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#231c33"/><text x="32" y="41" font-family="Manrope, sans-serif" font-size="28" font-weight="700" fill="#3eebae" text-anchor="middle">${initial.replace(/[<>&"]/g, '')}</text></svg>`
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
 }
 

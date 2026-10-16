@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import PhoneInput, { getCountryCallingCode } from 'react-phone-number-input'
 import { useAuth } from '../context/AuthContext'
+import { CloseIcon } from '../components/NavIcons'
 import logo from '../assets/logo.png'
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 const countryFlags = import.meta.glob(
   '../../node_modules/country-flag-icons/3x2/*.svg',
@@ -236,7 +239,7 @@ function EyeIcon({ open }) {
 export default function Signup() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { signup } = useAuth()
+  const { signup, sendVerificationCode, verifyEmail, resendOtp } = useAuth()
 
   const [name, setName] = useState('')
   const [phone, setPhone] = useState()
@@ -254,6 +257,74 @@ export default function Signup() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
+  const [verificationOpen, setVerificationOpen] = useState(false)
+  const [closeSpin, setCloseSpin] = useState(0)
+  const [closingVerification, setClosingVerification] = useState(false)
+  const [codeSent, setCodeSent] = useState(false)
+  const [verificationToken, setVerificationToken] = useState('')
+  const [verifiedEmail, setVerifiedEmail] = useState('')
+  const [otp, setOtp] = useState('')
+  const [info, setInfo] = useState('')
+  const [expiresAt, setExpiresAt] = useState(0)
+  const [resendAt, setResendAt] = useState(0)
+  const [now, setNow] = useState(0)
+
+  useEffect(() => {
+    if (!verificationOpen || !codeSent) return undefined
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [verificationOpen, codeSent])
+
+  const secondsLeft = Math.max(0, Math.ceil((expiresAt - now) / 1000))
+  const resendIn = Math.max(0, Math.ceil((resendAt - now) / 1000))
+  const timeLeft = `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')}`
+  const cleanEmail = email.trim().toLowerCase()
+  const emailIsValid = EMAIL_PATTERN.test(cleanEmail) && cleanEmail.length <= 254
+  const emailIsVerified = Boolean(
+    verificationToken && verifiedEmail === cleanEmail,
+  )
+
+  function startCodeTimers() {
+    const t = Date.now()
+    setNow(t)
+    setExpiresAt(t + 3 * 60 * 1000)
+    setResendAt(t + 30 * 1000)
+  }
+
+  function handleEmailChange(event) {
+    const nextEmail = event.target.value
+    const nextCleanEmail = nextEmail.trim().toLowerCase()
+    setEmail(nextEmail)
+
+    if (nextCleanEmail !== cleanEmail) {
+      setVerificationToken('')
+      setVerifiedEmail('')
+      setVerificationOpen(false)
+      setCodeSent(false)
+      setOtp('')
+      setError('')
+      setInfo('')
+    }
+  }
+
+  async function handleSendCode() {
+    setError('')
+    setInfo('')
+    setLoading(true)
+
+    try {
+      const result = await sendVerificationCode({ email: cleanEmail })
+      setOtp('')
+      startCodeTimers()
+      setCodeSent(true)
+      setInfo(result.message)
+    } catch (sendError) {
+      setError(sendError.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault()
 
@@ -264,25 +335,88 @@ export default function Signup() {
       return
     }
 
+    if (!emailIsVerified) {
+      setError('Verify your email before creating your account.')
+      return
+    }
+
     setLoading(true)
 
     try {
       await signup({
         name,
         phone,
-        email,
+        email: cleanEmail,
         password,
+        emailVerificationToken: verificationToken,
       })
       navigate('/login', {
         replace: true,
         state: {
-          notice: 'Your account was created. Please log in to continue.',
+          notice: 'Your account is ready. Please log in.',
         },
       })
     } catch (submitError) {
       setError(submitError.message)
+    } finally {
       setLoading(false)
     }
+  }
+
+  async function handleVerify(event) {
+    event.preventDefault()
+    setError('')
+    setInfo('')
+
+    if (!/^\d{6}$/.test(otp)) {
+      setError('Enter the 6-digit code from your email.')
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      const result = await verifyEmail({ email: cleanEmail, otp })
+      setVerificationToken(result.emailVerificationToken)
+      setVerifiedEmail(cleanEmail)
+      setVerificationOpen(false)
+      setCodeSent(false)
+      setOtp('')
+      setInfo('Email verified. You can create your account.')
+      setError('')
+      setLoading(false)
+    } catch (verifyError) {
+      setError(verifyError.message)
+      setLoading(false)
+    }
+  }
+
+  async function handleResend() {
+    setError('')
+    setInfo('')
+    setLoading(true)
+
+    try {
+      const result = await resendOtp({ email: cleanEmail })
+      setOtp('')
+      startCodeTimers()
+      setInfo(result.message)
+    } catch (resendError) {
+      setError(resendError.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function closeVerification() {
+    if (loading || closingVerification) return
+
+    setClosingVerification(true)
+    setCloseSpin((spin) => spin + 1)
+    window.setTimeout(() => {
+      setVerificationOpen(false)
+      setClosingVerification(false)
+    }, 520)
   }
 
   return (
@@ -307,10 +441,8 @@ export default function Signup() {
               Welcome to Spontii
             </p>
 
-            <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-              Meet people.
-              <br />
-              Make plans.
+            <h1 className="whitespace-nowrap text-[clamp(1.125rem,6vw,2.125rem)] font-extrabold tracking-tight">
+              Meet people. Make plans.
             </h1>
 
             <p className="mx-auto mt-3 max-w-sm text-sm leading-6 text-muted">
@@ -390,18 +522,44 @@ export default function Signup() {
                 Email
               </label>
 
-              <input
-                id="signup-email"
-                type="email"
-                value={email}
-                onChange={(event) =>
-                  setEmail(event.target.value)
-                }
-                placeholder="you@example.com"
-                autoComplete="email"
-                required
-                className="w-full rounded-xl border border-border bg-surface px-4 py-3.5 text-sm text-text outline-none transition focus:border-mint"
-              />
+              <div className="flex items-stretch gap-2">
+                <input
+                  id="signup-email"
+                  type="email"
+                  value={email}
+                  onChange={handleEmailChange}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  required
+                  className="min-w-0 flex-1 rounded-xl border border-border bg-surface px-4 py-3.5 text-sm text-text outline-none transition focus:border-mint"
+                />
+                <button
+                  type="button"
+                  disabled={!emailIsValid || loading || emailIsVerified}
+                  onClick={() => {
+                    setError('')
+                    setInfo('')
+                    setVerificationOpen(true)
+                  }}
+                  className={`signup-email-verify shrink-0 rounded-xl border px-4 text-xs font-extrabold transition disabled:cursor-not-allowed ${
+                    emailIsVerified
+                      ? 'border-mint/50 bg-mint-soft text-mint'
+                      : 'border-mint bg-mint/10 text-mint hover:bg-mint hover:text-bg'
+                  }`}
+                >
+                  {emailIsVerified ? 'Verified ✓' : 'Verify'}
+                </button>
+              </div>
+              {!emailIsVerified && (
+                <p className="mt-2 text-xs text-muted">
+                  Verify your email to continue creating your account.
+                </p>
+              )}
+              {emailIsVerified && (
+                <p role="status" className="mt-2 text-xs font-semibold text-mint">
+                  Email verified — you’re ready to continue.
+                </p>
+              )}
             </div>
 
             <div>
@@ -508,7 +666,7 @@ export default function Signup() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !emailIsVerified}
               className="w-full rounded-xl bg-mint px-5 py-3.5 text-sm font-bold text-bg transition hover:bg-mint/90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading
@@ -535,6 +693,140 @@ export default function Signup() {
           </p>
         </div>
       </div>
+
+      {verificationOpen && (
+        <div
+          className="signup-verification-backdrop fixed inset-0 z-50 flex items-center justify-center overflow-y-auto px-4 py-5 sm:px-6"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !loading) {
+              setVerificationOpen(false)
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="email-verification-title"
+            className="signup-verification-card my-auto w-full max-w-lg rounded-[1.75rem] border border-white/10 bg-surface-2 p-6 shadow-2xl sm:p-9"
+          >
+            <div className="flex items-start justify-between gap-5">
+              <div>
+                <p className="inline-flex items-center gap-2 rounded-full border border-mint/20 bg-mint/5 px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-[0.15em] text-mint">
+                  <span className="h-1.5 w-1.5 rounded-full bg-mint" />
+                  Secure email verification
+                </p>
+                <h2
+                  id="email-verification-title"
+                  className="mt-4 text-2xl font-extrabold tracking-tight sm:text-[1.75rem]"
+                >
+                  Verify your email
+                </h2>
+              </div>
+              <button
+                key={closeSpin}
+                type="button"
+                disabled={loading || closingVerification}
+                onClick={closeVerification}
+                aria-label="Close email verification"
+                className={`signup-verification-close mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-muted transition-colors hover:border-mint/25 hover:bg-mint/10 hover:text-mint disabled:opacity-50 ${closeSpin ? 'is-spinning' : ''}`}
+              >
+                <CloseIcon className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-5 flex items-start gap-3 rounded-2xl border border-border/80 bg-bg/45 p-4 sm:p-5">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-mint/10 text-mint">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="h-5 w-5">
+                  <rect x="3" y="5" width="18" height="14" rx="3" stroke="currentColor" strokeWidth="1.7" />
+                  <path d="m4 7 8 6 8-6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm leading-6 text-muted">
+                  {codeSent
+                    ? 'Enter the one-time code sent to this address.'
+                    : 'We’ll send a one-time code to this address.'}
+                </p>
+                <p className="mt-1 break-all text-sm font-bold text-text sm:text-base">
+                  {cleanEmail}
+                </p>
+                <p className="mt-2 text-xs font-medium text-muted">
+                  Your code is valid for 3 minutes.
+                </p>
+              </div>
+            </div>
+
+            {!codeSent ? (
+              <button
+                type="button"
+                disabled={loading}
+                onClick={handleSendCode}
+                className="signup-verification-action mt-6 flex h-12 w-full items-center justify-center rounded-xl bg-mint px-4 text-sm font-extrabold text-bg transition hover:bg-mint/90 disabled:cursor-wait disabled:opacity-60"
+              >
+                {loading ? 'Sending code...' : 'Send verification code'}
+              </button>
+            ) : (
+              <form onSubmit={handleVerify} className="mt-6 space-y-4">
+                <div>
+                  <label htmlFor="signup-otp" className="mb-2 block text-sm font-semibold">
+                    6-digit verification code
+                  </label>
+                  <input
+                    id="signup-otp"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    value={otp}
+                    onChange={(event) =>
+                      setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))
+                    }
+                    placeholder="••••••"
+                    autoFocus
+                    className="w-full rounded-xl border border-border bg-bg/70 px-4 py-3.5 text-center text-2xl font-extrabold tracking-[0.5em] text-text outline-none transition focus:border-mint"
+                  />
+                  <p className="mt-2 text-center text-xs text-muted" aria-live="polite">
+                    {secondsLeft > 0
+                      ? `Code expires in ${timeLeft}`
+                      : 'This code has expired. Request a new one.'}
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || otp.length !== 6 || secondsLeft === 0}
+                  className="signup-verification-action flex h-12 w-full items-center justify-center rounded-xl bg-mint px-4 text-sm font-extrabold text-bg transition hover:bg-mint/90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loading ? 'Checking code...' : 'Verify email'}
+                </button>
+
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted">Check your inbox and spam folder.</span>
+                  <button
+                    type="button"
+                    onClick={handleResend}
+                    disabled={loading || resendIn > 0}
+                    className="font-bold text-mint transition hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
+                  >
+                    {resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {info && (
+              <p role="status" className="mt-4 rounded-xl border border-mint/30 bg-mint-soft px-4 py-3 text-sm text-text">
+                {info}
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="mt-4 rounded-xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-danger">
+                {error}
+              </p>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   )
 }

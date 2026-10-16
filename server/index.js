@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import dotenv from 'dotenv'
 import express from 'express'
 import rateLimit from 'express-rate-limit'
@@ -10,6 +10,7 @@ import jwt from 'jsonwebtoken'
 import multer from 'multer'
 import mysql from 'mysql2/promise'
 import { fileURLToPath } from 'node:url'
+import { sendOtpEmail } from './mail.js'
 
 dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)) })
 
@@ -182,6 +183,31 @@ app.get('/api/health', (_request, response) => {
   response.json({ status: 'ok' })
 })
 
+const OTP_TTL_MINUTES = 3
+const OTP_MAX_ATTEMPTS = 5
+const OTP_RESEND_SECONDS = 30
+const EMAIL_VERIFICATION_TOKEN_TTL = '30m'
+
+function hashOtp(email, otp) {
+  return createHmac('sha256', jwtSecret).update(`${email}:${otp}`).digest('hex')
+}
+
+async function issueOtp(email) {
+  const otp = String(randomInt(0, 1000000)).padStart(6, '0')
+  await pool.execute(
+    `INSERT INTO email_verifications
+       (email, otp_hash, otp_expires_at, attempts, last_sent_at)
+     VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), 0, NOW())
+     ON DUPLICATE KEY UPDATE
+       otp_hash = VALUES(otp_hash),
+       otp_expires_at = DATE_ADD(NOW(), INTERVAL ? MINUTE),
+       attempts = 0,
+       last_sent_at = NOW()`,
+    [email, hashOtp(email, otp), OTP_TTL_MINUTES, OTP_TTL_MINUTES],
+  )
+  return otp
+}
+
 app.post('/api/auth/signup', authLimiter, async (request, response, next) => {
   const validation = validateSignup(request.body)
 
@@ -191,25 +217,196 @@ app.post('/api/auth/signup', authLimiter, async (request, response, next) => {
 
   try {
     const { name, phone, email, password } = validation.value
+    const verificationToken = typeof request.body?.emailVerificationToken === 'string'
+      ? request.body.emailVerificationToken
+      : ''
+    let verifiedEmail
+
+    try {
+      const payload = jwt.verify(verificationToken, jwtSecret)
+      if (payload.purpose !== 'signup_email_verified' || payload.email !== email) {
+        throw new Error('Email verification does not match.')
+      }
+      verifiedEmail = payload.email
+    } catch {
+      return response.status(403).json({
+        message: 'Verify your email before creating your account.',
+      })
+    }
+
+    const [existing] = await pool.execute(
+      'SELECT client_id FROM clients WHERE email = ? OR phone_number = ? LIMIT 1',
+      [verifiedEmail, phone],
+    )
+    if (existing.length > 0) {
+      return response.status(409).json({
+        message: 'An account with this email or phone number already exists.',
+      })
+    }
+
     const passwordHash = await bcrypt.hash(password, 12)
     const spontiiiId = `SPONTIII-${randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()}`
     await pool.execute(
       `INSERT INTO clients
          (full_name, phone_number, email, password_hash, spontiii_id, spontii_score)
        VALUES (?, ?, ?, ?, ?, 20)`,
-      [name, phone, email, passwordHash, spontiiiId],
+      [name, phone, verifiedEmail, passwordHash, spontiiiId],
     )
 
     response.clearCookie(cookieName, cookieOptions)
-    response.status(201).json({
-      message: 'Account created. Please log in to continue.',
-    })
+    response.status(201).json({ message: 'Account created. Please log in to continue.' })
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
       return response.status(409).json({
         message: 'An account with this email or phone number already exists.',
       })
     }
+    next(error)
+  }
+})
+
+app.post('/api/auth/send-verification-code', authLimiter, async (request, response, next) => {
+  const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : ''
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return response.status(400).json({ message: 'Enter a valid email address.' })
+  }
+
+  try {
+    const [existing] = await pool.execute(
+      'SELECT client_id FROM clients WHERE email = ? LIMIT 1',
+      [email],
+    )
+    if (existing.length) {
+      return response.status(409).json({ message: 'An account with this email already exists.' })
+    }
+
+    const [previousCodes] = await pool.execute(
+      `SELECT TIMESTAMPDIFF(SECOND, last_sent_at, NOW()) AS since_last
+       FROM email_verifications WHERE email = ? LIMIT 1`,
+      [email],
+    )
+    if (previousCodes[0]?.since_last < OTP_RESEND_SECONDS) {
+      return response.status(429).json({
+        message: `Please wait ${OTP_RESEND_SECONDS - previousCodes[0].since_last}s before requesting another code.`,
+      })
+    }
+
+    const otp = await issueOtp(email)
+
+    try {
+      await sendOtpEmail({ to: email, name: 'there', otp, minutes: OTP_TTL_MINUTES })
+    } catch (mailError) {
+      console.error('Failed to send verification email:', mailError.message)
+      await pool.execute('DELETE FROM email_verifications WHERE email = ?', [email])
+      return response.status(502).json({
+        message: 'We could not send the verification email. Check the address and try again.',
+      })
+    }
+
+    response.json({
+      message: 'We sent a 6-digit code to your email.',
+      expiresInSeconds: OTP_TTL_MINUTES * 60,
+      resendInSeconds: OTP_RESEND_SECONDS,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/auth/verify-email', authLimiter, async (request, response, next) => {
+  const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : ''
+  const otp = typeof request.body?.otp === 'string' ? request.body.otp.trim() : ''
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^\d{6}$/.test(otp)) {
+    return response.status(400).json({ message: 'Enter a valid email and the 6-digit code.' })
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      'SELECT *, otp_expires_at <= NOW() AS expired FROM email_verifications WHERE email = ? LIMIT 1',
+      [email],
+    )
+    const verification = rows[0]
+
+    if (!verification) {
+      return response.status(404).json({ message: 'Request a verification code first.' })
+    }
+    if (verification.expired) {
+      return response.status(410).json({ message: 'This code has expired. Request a new one.' })
+    }
+    if (verification.attempts >= OTP_MAX_ATTEMPTS) {
+      return response.status(429).json({ message: 'Too many wrong attempts. Request a new code.' })
+    }
+
+    const expected = Buffer.from(verification.otp_hash)
+    const given = Buffer.from(hashOtp(email, otp))
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+      await pool.execute('UPDATE email_verifications SET attempts = attempts + 1 WHERE email = ?', [email])
+      return response.status(400).json({ message: 'Incorrect code. Please try again.' })
+    }
+
+    const [deleteResult] = await pool.execute(
+      'DELETE FROM email_verifications WHERE email = ? AND otp_hash = ? AND otp_expires_at > NOW()',
+      [email, verification.otp_hash],
+    )
+    if (deleteResult.affectedRows !== 1) {
+      return response.status(410).json({ message: 'This code has expired or was already used. Request a new one.' })
+    }
+
+    const emailVerificationToken = jwt.sign(
+      { email, purpose: 'signup_email_verified' },
+      jwtSecret,
+      { expiresIn: EMAIL_VERIFICATION_TOKEN_TTL },
+    )
+    response.json({
+      message: 'Email verified.',
+      emailVerificationToken,
+      expiresInMinutes: 30,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/auth/resend-otp', authLimiter, async (request, response, next) => {
+  const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : ''
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return response.status(400).json({ message: 'Enter a valid email address.' })
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      `SELECT TIMESTAMPDIFF(SECOND, last_sent_at, NOW()) AS since_last
+       FROM email_verifications WHERE email = ? LIMIT 1`,
+      [email],
+    )
+    const verification = rows[0]
+
+    if (!verification) {
+      return response.status(404).json({ message: 'Request a verification code first.' })
+    }
+    if (verification.since_last < OTP_RESEND_SECONDS) {
+      return response.status(429).json({
+        message: `Please wait ${OTP_RESEND_SECONDS - verification.since_last}s before requesting another code.`,
+      })
+    }
+
+    const otp = await issueOtp(email)
+    try {
+      await sendOtpEmail({ to: email, name: 'there', otp, minutes: OTP_TTL_MINUTES })
+    } catch (mailError) {
+      console.error('Failed to resend verification email:', mailError.message)
+      return response.status(502).json({ message: 'We could not send the email. Please try again.' })
+    }
+
+    response.json({
+      message: 'A new code has been sent.',
+      expiresInSeconds: OTP_TTL_MINUTES * 60,
+      resendInSeconds: OTP_RESEND_SECONDS,
+    })
+  } catch (error) {
     next(error)
   }
 })
@@ -459,6 +656,20 @@ async function start() {
     ) ENGINE=InnoDB
       DEFAULT CHARACTER SET utf8mb4
       COLLATE utf8mb4_unicode_ci
+  `)
+
+  await pool.query(`
+      CREATE TABLE IF NOT EXISTS email_verifications (
+        email VARCHAR(254) NOT NULL,
+        otp_hash VARCHAR(64) NOT NULL,
+        otp_expires_at DATETIME NOT NULL,
+        attempts INT UNSIGNED NOT NULL DEFAULT 0,
+        last_sent_at DATETIME NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (email)
+      ) ENGINE=InnoDB
+        DEFAULT CHARACTER SET utf8mb4
+        COLLATE utf8mb4_unicode_ci
   `)
 
   const profileColumns = [

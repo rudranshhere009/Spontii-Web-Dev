@@ -42,6 +42,27 @@ export function AuthProvider({ children }) {
     return result
   }
 
+  async function sendVerificationCode(details) {
+    return apiRequest('/auth/send-verification-code', {
+      method: 'POST',
+      body: details,
+    })
+  }
+
+  async function verifyEmail(details) {
+    return apiRequest('/auth/verify-email', {
+      method: 'POST',
+      body: details,
+    })
+  }
+
+  async function resendOtp(details) {
+    return apiRequest('/auth/resend-otp', {
+      method: 'POST',
+      body: details,
+    })
+  }
+
   async function login(credentials) {
     const result = await apiRequest('/auth/login', {
       method: 'POST',
@@ -81,6 +102,9 @@ export function AuthProvider({ children }) {
     loading,
     isAuthenticated: Boolean(user),
     signup,
+    sendVerificationCode,
+    verifyEmail,
+    resendOtp,
     login,
     logout,
     updateProfile,

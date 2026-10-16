@@ -1,14 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fredoka:wght@500;600;700&family=Caveat:wght@600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Instrument+Sans:wght@400..700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
 @import "react-phone-number-input/style.css";
 
 @theme {
-  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-logo: "Fredoka", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-handwritten: "Caveat", cursive;
-
-  --font-heading: "Bricolage Grotesque", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-body: "Instrument Sans", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
 
   --color-bg: #0c0a15;
   --color-surface: #15111f;
@@ -141,6 +136,82 @@ a, button, div, nav {
   animation: rise-in 0.22s ease-out both;
 }
 
+.profile-reminder-backdrop {
+  background: rgb(7 6 12 / 78%);
+  animation: profile-reminder-fade 240ms ease-out both;
+  perspective: 1200px;
+}
+
+.profile-reminder-card {
+  isolation: isolate;
+  transform-style: preserve-3d;
+  box-shadow:
+    0 32px 100px rgb(0 0 0 / 55%),
+    0 0 0 1px rgb(62 235 174 / 8%),
+    0 0 55px rgb(62 235 174 / 9%);
+  animation: profile-reminder-enter 620ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.profile-reminder-card::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(ellipse at 15% 0%, rgb(62 235 174 / 12%), transparent 45%),
+    linear-gradient(145deg, rgb(255 255 255 / 3%), transparent 48%);
+  content: "";
+  pointer-events: none;
+}
+
+.profile-reminder-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.profile-reminder-welcome {
+  display: inline-block;
+  transform-style: preserve-3d;
+  text-shadow: 0 0 24px rgb(62 235 174 / 24%);
+  animation: profile-reminder-welcome-spin 5s linear infinite;
+}
+
+.profile-reminder-progress {
+  box-shadow: 0 0 14px rgb(62 235 174 / 50%);
+  transition: width 450ms ease-out;
+}
+
+.profile-reminder-cta {
+  box-shadow: 0 8px 24px rgb(62 235 174 / 22%);
+  transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.profile-reminder-cta:hover {
+  box-shadow: 0 10px 30px rgb(62 235 174 / 34%);
+  transform: translateY(-1px);
+}
+
+@keyframes profile-reminder-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes profile-reminder-enter {
+  from {
+    opacity: 0;
+    transform: translateY(24px) rotateX(9deg) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotateX(0) scale(1);
+  }
+}
+
+@keyframes profile-reminder-welcome-spin {
+  0% { transform: rotateY(0); }
+  40%, 100% { transform: rotateY(360deg); }
+}
+
 .signup-phone-input .PhoneInputInput {
   min-width: 0;
   width: 100%;
@@ -150,6 +221,70 @@ a, button, div, nav {
   background: transparent;
   color: var(--color-text);
   font: inherit;
+}
+
+.signup-email-verify {
+  box-shadow: 0 0 18px rgb(62 235 174 / 16%) !important;
+  animation: signup-email-verify-glow 2.4s ease-in-out infinite;
+}
+
+.signup-verification-backdrop {
+  background: rgb(7 6 12 / 68%);
+  -webkit-backdrop-filter: blur(14px) saturate(115%) !important;
+  backdrop-filter: blur(14px) saturate(115%) !important;
+  animation: signup-verification-fade 220ms ease-out both;
+}
+
+.signup-verification-card {
+  background:
+    radial-gradient(ellipse at 8% 0%, rgb(62 235 174 / 8%), transparent 42%),
+    var(--color-surface-2);
+  box-shadow:
+    0 30px 90px rgb(0 0 0 / 42%),
+    0 1px 0 rgb(255 255 255 / 5%) inset,
+    0 0 0 1px rgb(255 255 255 / 3%);
+  animation: signup-verification-present 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.signup-verification-close {
+  transition: transform 650ms cubic-bezier(0.2, 0.8, 0.2, 1), color 180ms ease, background-color 180ms ease, border-color 180ms ease;
+}
+
+.signup-verification-close:hover {
+  transform: rotate(360deg);
+}
+
+.signup-verification-close.is-spinning {
+  animation: signup-verification-close-spin 500ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.signup-verification-action {
+  box-shadow: 0 8px 24px rgb(62 235 174 / 16%);
+}
+
+.signup-verification-action:hover {
+  box-shadow: 0 10px 28px rgb(62 235 174 / 24%);
+  transform: translateY(-1px);
+}
+
+@keyframes signup-verification-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes signup-verification-present {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes signup-verification-close-spin {
+  from { transform: rotate(0); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes signup-email-verify-glow {
+  0%, 100% { box-shadow: 0 0 12px rgb(62 235 174 / 12%); }
+  50% { box-shadow: 0 0 22px rgb(62 235 174 / 32%); }
 }
 
 .signup-phone-input .PhoneInputInput::placeholder {
@@ -375,4 +510,23 @@ a, button, div, nav {
 
 @media (prefers-reduced-motion: reduce) {
   .animate-rise-in { animation: none; }
+  .signup-email-verify { animation: none; }
+  .signup-verification-backdrop,
+  .signup-verification-card,
+  .signup-verification-close.is-spinning {
+    animation: none;
+  }
+  .signup-verification-close,
+  .signup-verification-action {
+    transition: none;
+  }
+  .profile-reminder-backdrop,
+  .profile-reminder-card,
+  .profile-reminder-welcome {
+    animation: none;
+  }
+  .profile-reminder-cta,
+  .profile-reminder-progress {
+    transition: none;
+  }
 }

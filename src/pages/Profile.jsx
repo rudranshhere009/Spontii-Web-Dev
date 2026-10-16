@@ -30,12 +30,15 @@ export default function Profile() {
     currentUser: profile,
     updateProfile,
   } = useApp()
+  const maskedSpontiiiId = profile.spontiiiId
+    ? profile.spontiiiId.replace(/-(.+)$/, (_, suffix) => `-${suffix.replace(/[A-Za-z0-9]/g, '•')}`)
+    : '—'
 
   const navigate = useNavigate()
   const location = useLocation()
   const { logout, uploadProfilePhoto } = useAuth()
 
-  const [editing, setEditing] = useState(false)
+  const [editing, setEditing] = useState(Boolean(location.state?.openProfileEditor))
   const [draft, setDraft] = useState(profile)
   const [selectedPhoto, setSelectedPhoto] = useState(null)
   const photoPreview = useMemo(
@@ -54,6 +57,12 @@ export default function Profile() {
       if (photoPreview) URL.revokeObjectURL(photoPreview)
     }
   }, [photoPreview])
+
+  useEffect(() => {
+    if (location.state?.openProfileEditor) {
+      navigate(location.pathname, { replace: true, state: null })
+    }
+  }, [location.key, location.pathname, location.state, navigate])
 
   // ==================================================
   // LOGOUT
@@ -229,7 +238,7 @@ export default function Profile() {
                   <button
                     type="button"
                     onClick={openEditor}
-                    className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-semibold text-muted transition-colors hover:border-mint/40 hover:text-mint"
+                    className="ml-3 rounded-lg border border-mint bg-mint/15 px-3.5 py-2 text-xs font-bold text-mint shadow-[0_0_14px_rgba(62,235,174,0.55)] transition-all duration-200 hover:bg-mint hover:text-bg hover:shadow-[0_0_24px_rgba(62,235,174,0.9)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 sm:ml-5"
                   >
                     {profile.avatar === avatarPlaceholder ? 'Add photo' : 'Edit photo'}
                   </button>
@@ -258,9 +267,17 @@ export default function Profile() {
                   </p>
                 )}
 
-                <p className="mt-2 text-xs text-muted">
-                  Spontiii ID <span className="ml-1 font-bold tracking-wide text-text">{profile.spontiiiId}</span>
-                </p>
+                <div
+                  className="mt-4 flex flex-wrap items-center gap-3"
+                  aria-label="Spontiii ID hidden for privacy"
+                >
+                  <span className="inline-flex items-center rounded-full border border-mint/50 bg-mint/10 px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-[0.16em] text-mint shadow-[0_0_16px_rgba(62,235,174,0.22)]">
+                    Spontiii - ID
+                  </span>
+                  <span className="text-sm font-bold tracking-[0.16em] text-text">
+                    {maskedSpontiiiId}
+                  </span>
+                </div>
 
                 <div className="mt-4 max-w-xl">
                   <div className="mb-1.5 flex justify-between text-xs">
@@ -778,7 +795,7 @@ export default function Profile() {
         <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
           <AccountValue label="Email" value={profile.email} />
           <AccountValue label="Phone" value={profile.phone} />
-          <AccountValue label="Spontiii ID" value={profile.spontiiiId} />
+          <AccountValue label="Spontiii ID" value={maskedSpontiiiId} />
         </div>
 
         <button

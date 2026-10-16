@@ -189,10 +189,8 @@ export default function Home() {
               <span className="text-mint">doing tonight?</span>
             </h1>
 
-            <p className="mt-6 max-w-sm text-lg leading-relaxed text-white/75">
-              Real people. Real plans.
-              <br />
-              Right around you.
+            <p className="mt-6 max-w-sm whitespace-nowrap text-base leading-relaxed text-white/75 sm:text-lg">
+              Real people. Real plans. Right around you.
             </p>
           </div>
 
