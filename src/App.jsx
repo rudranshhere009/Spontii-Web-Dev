@@ -11,13 +11,16 @@ import Profile from './pages/Profile'
 import CreatePlan from './pages/CreatePlan'
 import JoinRequests from './pages/JoinRequests'
 import ApplicantProfile from './pages/ApplicantProfile'
+import People from './pages/People'
 
 import Login from './pages/Login'
+import ForgotPassword from './pages/ForgotPassword'
 
 const Signup = lazy(() => import('./pages/Signup'))
 
 import { useAuth } from './context/AuthContext'
 import { redirectTarget } from './lib/auth'
+import { apiRequest } from './lib/api'
 
 const PROFILE_REMINDER_SNOOZE_MS = 60 * 60 * 1000
 
@@ -106,8 +109,12 @@ function PublicPage({ children }) {
 }
 
 function PublicHome() {
-  const { isAuthenticated, user } = useAuth()
+  const { isAuthenticated, loading, user } = useAuth()
   const location = useLocation()
+
+  if (loading) {
+    return <div className="min-h-screen bg-bg" aria-busy="true" />
+  }
 
   return (
     <div className="min-h-screen bg-bg text-text">
@@ -136,6 +143,24 @@ function ProfileCompletionReminder({ user }) {
   const [reminderOpen, setReminderOpen] = useState(() => snoozedUntil === null)
   const [snoozeReminder, setSnoozeReminder] = useState(false)
   const [welcomeSpin, setWelcomeSpin] = useState(0)
+  const [displayId, setDisplayId] = useState(() => window.crypto.randomUUID())
+
+  useEffect(() => {
+    if (!reminderOpen) return
+
+    apiRequest('/notifications/profile-reminder-shown', {
+      method: 'POST',
+      body: { displayId },
+    }).then(({ notification }) => {
+      if (notification) {
+        window.dispatchEvent(new CustomEvent('spontii:notification-created', {
+          detail: notification,
+        }))
+      }
+    }).catch((error) => {
+      console.error('Failed to register profile reminder notification:', error)
+    })
+  }, [displayId, reminderOpen])
 
   useEffect(() => {
     if (snoozedUntil === null) {
@@ -143,6 +168,7 @@ function ProfileCompletionReminder({ user }) {
     }
 
     const timeoutId = window.setTimeout(() => {
+      setDisplayId(window.crypto.randomUUID())
       setReminderOpen(true)
       setSnoozedUntil(null)
     }, Math.max(0, snoozedUntil - Date.now()))
@@ -300,6 +326,15 @@ export default function App() {
         }
       />
 
+      <Route
+        path="/forgot-password"
+        element={
+          <PublicPage>
+            <ForgotPassword />
+          </PublicPage>
+        }
+      />
+
       {/* ================= PROTECTED PAGES ================= */}
 
       <Route
@@ -343,6 +378,24 @@ export default function App() {
         element={
           <ProtectedPage>
             <CreatePlan />
+          </ProtectedPage>
+        }
+      />
+
+      <Route
+        path="/people/:id"
+        element={
+          <ProtectedPage>
+            <People />
+          </ProtectedPage>
+        }
+      />
+
+      <Route
+        path="/people"
+        element={
+          <ProtectedPage>
+            <People />
           </ProtectedPage>
         }
       />

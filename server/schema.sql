@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS clients (
   profile_photo MEDIUMBLOB NULL,
   profile_photo_mime VARCHAR(50) NULL,
   spontii_score INT UNSIGNED NOT NULL DEFAULT 20,
+  spontii_points INT UNSIGNED NOT NULL DEFAULT 0,
+  lifetime_activities_created INT UNSIGNED NOT NULL DEFAULT 0,
+  last_daily_points_claim_date DATE NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (client_id),
   UNIQUE KEY uq_clients_phone_number (phone_number),
@@ -29,6 +32,160 @@ CREATE TABLE IF NOT EXISTS email_verifications (
   last_sent_at DATETIME NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (email)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS login_otps (
+  email VARCHAR(254) NOT NULL,
+  otp_hash VARCHAR(64) NOT NULL,
+  otp_expires_at DATETIME NOT NULL,
+  attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  last_sent_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (email)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS notifications (
+  notification_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_id BIGINT UNSIGNED NOT NULL,
+  type VARCHAR(40) NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  message VARCHAR(500) NOT NULL,
+  route VARCHAR(255) NULL,
+  dedupe_key VARCHAR(100) NULL,
+  read_at DATETIME NULL,
+  dismissed_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (notification_id),
+  UNIQUE KEY uq_notifications_client_dedupe (client_id, dedupe_key),
+  KEY idx_notifications_client_active (client_id, dismissed_at, created_at),
+  CONSTRAINT fk_notifications_client
+    FOREIGN KEY (client_id) REFERENCES clients (client_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS activities (
+  activity_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  public_id CHAR(36) NOT NULL,
+  host_client_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  category VARCHAR(80) NOT NULL,
+  description VARCHAR(5000) NOT NULL,
+  visibility ENUM('public', 'friends', 'private') NOT NULL DEFAULT 'public',
+  vibe VARCHAR(60) NOT NULL DEFAULT 'Social',
+  city VARCHAR(80) NOT NULL,
+  state VARCHAR(80) NOT NULL DEFAULT '',
+  area VARCHAR(160) NOT NULL,
+  venue_name VARCHAR(160) NULL,
+  venue_address VARCHAR(300) NULL,
+  latitude DECIMAL(10, 7) NULL,
+  landmark VARCHAR(200) NULL,
+  longitude DECIMAL(10, 7) NULL,
+  starts_at DATETIME NOT NULL,
+  ends_at DATETIME NOT NULL,
+  join_request_cutoff_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 15,
+  capacity SMALLINT UNSIGNED NOT NULL,
+  food_available BOOLEAN NOT NULL DEFAULT FALSE,
+  food_preference ENUM('any', 'vegetarian', 'non-vegetarian', 'both') NULL,
+  beverages_available BOOLEAN NOT NULL DEFAULT FALSE,
+  drinks_available BOOLEAN NOT NULL DEFAULT FALSE,
+  attendee_preference VARCHAR(80) NOT NULL DEFAULT 'Anyone',
+  experience_level VARCHAR(80) NOT NULL DEFAULT 'Any experience',
+  preferences JSON NULL,
+  event_tags JSON NULL,
+  banner_image VARCHAR(1000) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (activity_id),
+  UNIQUE KEY uq_activities_public_id (public_id),
+  KEY idx_activities_active (visibility, ends_at, starts_at),
+  KEY idx_activities_host (host_client_id, ends_at),
+  CONSTRAINT fk_activities_host
+    FOREIGN KEY (host_client_id) REFERENCES clients (client_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS activity_join_requests (
+  request_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  activity_id BIGINT UNSIGNED NOT NULL,
+  applicant_client_id BIGINT UNSIGNED NOT NULL,
+  status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  reviewed_at DATETIME NULL,
+  PRIMARY KEY (request_id),
+  UNIQUE KEY uq_activity_join_request (activity_id, applicant_client_id),
+  KEY idx_activity_join_requests_status (activity_id, status, created_at),
+  CONSTRAINT fk_join_request_activity
+    FOREIGN KEY (activity_id) REFERENCES activities (activity_id) ON DELETE CASCADE,
+  CONSTRAINT fk_join_request_applicant
+    FOREIGN KEY (applicant_client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS activity_chat_messages (
+  message_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  activity_id BIGINT UNSIGNED NOT NULL,
+  sender_client_id BIGINT UNSIGNED NOT NULL,
+  message_text VARCHAR(2000) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (message_id),
+  KEY idx_activity_chat_retention (created_at),
+  KEY idx_activity_chat_activity (activity_id, created_at),
+  CONSTRAINT fk_activity_chat_activity
+    FOREIGN KEY (activity_id) REFERENCES activities (activity_id) ON DELETE CASCADE,
+  CONSTRAINT fk_activity_chat_sender
+    FOREIGN KEY (sender_client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS activity_media (
+  media_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  activity_id BIGINT UNSIGNED NOT NULL,
+  media_kind ENUM('image', 'video') NOT NULL,
+  mime_type VARCHAR(100) NOT NULL,
+  original_name VARCHAR(255) NOT NULL,
+  media_data LONGBLOB NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (media_id),
+  KEY idx_activity_media_activity (activity_id),
+  CONSTRAINT fk_activity_media_activity
+    FOREIGN KEY (activity_id) REFERENCES activities (activity_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS friendships (
+  friendship_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_low_id BIGINT UNSIGNED NOT NULL,
+  client_high_id BIGINT UNSIGNED NOT NULL,
+  requester_client_id BIGINT UNSIGNED NOT NULL,
+  recipient_client_id BIGINT UNSIGNED NOT NULL,
+  status ENUM('pending', 'accepted', 'rejected') NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (friendship_id),
+  UNIQUE KEY uq_friendship_pair (client_low_id, client_high_id),
+  KEY idx_friendship_recipient_status (recipient_client_id, status),
+  KEY idx_friendship_requester_status (requester_client_id, status),
+  CONSTRAINT fk_friendship_low_client
+    FOREIGN KEY (client_low_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+  CONSTRAINT fk_friendship_high_client
+    FOREIGN KEY (client_high_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+  CONSTRAINT fk_friendship_requester_client
+    FOREIGN KEY (requester_client_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+  CONSTRAINT fk_friendship_recipient_client
+    FOREIGN KEY (recipient_client_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+  CONSTRAINT chk_friendship_distinct_clients CHECK (client_low_id < client_high_id)
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;

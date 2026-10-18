@@ -294,3 +294,31 @@ export function imageForCategory(category) {
     seedActivities[0]?.image
   )
 }
+
+const seededBanner = (activityId) =>
+  seedActivities.find((activity) => activity.id === activityId)?.image
+
+export const BANNER_OPTIONS = [
+  { label: 'Sports Social', image: seededBanner('pune-pickleball') },
+  { label: 'Game Night', image: seededBanner('zen-boardgames') },
+  { label: 'Live Music', image: seededBanner('antisocial-acoustic') },
+  { label: 'Food & Dinner', image: seededBanner('viman-food-walk') },
+  { label: 'Gym & Fitness', image: seededBanner('viman-yoga') },
+  {
+    label: 'Coffee Date',
+    image: 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=800&q=80',
+  },
+  {
+    label: 'Movie Night',
+    image: 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=800&q=80',
+  },
+  {
+    label: 'Streaming Night',
+    image: 'https://images.unsplash.com/photo-1524985069026-dd778a71c7b4?auto=format&fit=crop&w=800&q=80',
+  },
+  {
+    label: 'Night Hangout',
+    image: 'https://images.unsplash.com/photo-1519671482749-fd09be7ccebf?auto=format&fit=crop&w=800&q=80',
+  },
+  { label: 'Outdoor Adventure', image: seededBanner('sunday-cycling') },
+].filter((option) => option.image)

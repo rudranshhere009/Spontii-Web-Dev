@@ -72,6 +72,22 @@ export function AuthProvider({ children }) {
     return result.user
   }
 
+  async function sendLoginCode(details) {
+    return apiRequest('/auth/send-login-code', {
+      method: 'POST',
+      body: details,
+    })
+  }
+
+  async function loginWithCode(details) {
+    const result = await apiRequest('/auth/login-with-code', {
+      method: 'POST',
+      body: details,
+    })
+    setUser(result.user)
+    return result.user
+  }
+
   async function updateProfile(fields) {
     const result = await apiRequest('/profile', {
       method: 'PATCH',
@@ -106,6 +122,8 @@ export function AuthProvider({ children }) {
     verifyEmail,
     resendOtp,
     login,
+    sendLoginCode,
+    loginWithCode,
     logout,
     updateProfile,
     uploadProfilePhoto,

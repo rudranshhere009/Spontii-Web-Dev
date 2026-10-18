@@ -197,7 +197,7 @@ export default function Profile() {
   // ==================================================
 
   return (
-    <div className="mx-auto max-w-[1500px] space-y-10 px-5 py-8 sm:px-6 lg:px-8">
+    <div className="wide-screen-container mx-auto max-w-[1500px] space-y-10 px-5 py-8 sm:px-6 lg:px-8">
 
       {/* ==================================================
           PROFILE HEADER

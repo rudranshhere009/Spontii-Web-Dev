@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import {
   Link,
   NavLink,
@@ -10,7 +13,22 @@ import { useApp } from "../context/AppContext";
 import { useAuth } from "../context/AuthContext";
 import logo from "../assets/logo.png";
 import ThemeToggle from "./ThemeToggle";
-import { CITIES, requestCity, setLocationPref } from "../lib/location";
+import Notifications from "./Notifications";
+import { FriendsMenu, PeopleSearch } from "./PeopleControls";
+import {
+  CITY_CENTERS,
+  CITY_STATES,
+  fetchCitiesForState,
+  geocodeCity,
+  getSelectedCity,
+  getSelectedCityCenter,
+  getSelectedState,
+  INDIA_STATES,
+  requestIndianLocation,
+  saveSelectedCity,
+  setLocationPref,
+  STATE_CENTERS,
+} from "../lib/location";
 import {
   HomeIcon,
   CompassIcon,
@@ -19,9 +37,9 @@ import {
   PlusIcon,
   MapPinIcon,
   ChevronDownIcon,
-  BellIcon,
   NavigationIcon,
   SearchIcon,
+  UsersIcon,
 } from "./NavIcons";
 
 /* Each nav item is its own icon tab, sized like the theme toggle beside it. */
@@ -94,9 +112,156 @@ function MobileNavItem({ to, icon: Icon, label, primary = false }) {
   );
 }
 
+function cityMarkerIcon(selected) {
+  const pin = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10.2c0 5.1-8 10.3-8 10.3S4 15.3 4 10.2a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10.2" r="2.5"/></svg>'
+  return L.divIcon({
+    className: `spontii-map-marker${selected ? " is-selected" : ""}`,
+    html: `<span>${pin}</span>`,
+    iconSize: [32, 40],
+    iconAnchor: [16, 38],
+  })
+}
+
+function LocationSearchSelect({
+  id,
+  label,
+  value,
+  options,
+  placeholder,
+  disabled = false,
+  loading = false,
+  emptyMessage = "No matches found",
+  onSelect,
+  onInputChange,
+}) {
+  const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState(null);
+  const inputRef = useRef(null);
+  const visibleValue = editing ? query : value;
+  const normalizedQuery = editing ? query.trim().toLocaleLowerCase() : "";
+  const filteredOptions = options
+    .filter((option) => option.toLocaleLowerCase().includes(normalizedQuery));
+
+  useEffect(() => {
+    if (!open || disabled || !inputRef.current) return undefined;
+
+    const updatePosition = () => {
+      const rect = inputRef.current?.getBoundingClientRect();
+      if (rect) {
+        setMenuPosition({
+          top: rect.bottom + 8,
+          left: rect.left,
+          width: rect.width,
+        });
+      }
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open, disabled]);
+
+  function choose(option) {
+    setQuery(option);
+    setEditing(false);
+    setOpen(false);
+    onSelect(option);
+  }
+
+  return (
+    <div className="location-combobox">
+      <label htmlFor={id} className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-muted">
+        {label}
+      </label>
+      <div className="relative">
+        <input
+          ref={inputRef}
+          id={id}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={`${id}-options`}
+          aria-expanded={open}
+          aria-label={label}
+          autoComplete="off"
+          value={visibleValue}
+          placeholder={placeholder}
+          disabled={disabled}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => {
+            const nextQuery = event.target.value;
+            setQuery(nextQuery);
+            setEditing(true);
+            setOpen(true);
+            onInputChange?.(nextQuery);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setOpen(false);
+              setEditing(false);
+            } else if (event.key === "Enter" && filteredOptions.length > 0) {
+              event.preventDefault();
+              choose(filteredOptions[0]);
+            } else if (event.key === "ArrowDown") {
+              setOpen(true);
+            }
+          }}
+          onBlur={(event) => {
+            if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) {
+              setOpen(false);
+              setEditing(false);
+            }
+          }}
+          className="location-combobox-input h-11 w-full rounded-xl border border-border bg-surface px-3 pr-12 text-sm text-text outline-none transition duration-200 placeholder:text-muted-2 hover:border-text/25 focus:border-mint/60 focus:ring-2 focus:ring-mint/15 disabled:cursor-not-allowed disabled:opacity-50"
+        />
+        <ChevronDownIcon
+          aria-hidden
+          className={`pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+        />
+        {open && !disabled && menuPosition && createPortal(
+          <div
+            className="location-combobox-menu fixed z-[1000] overflow-hidden rounded-xl border border-border bg-surface-2 p-1.5"
+            style={menuPosition}
+          >
+            {filteredOptions.length > 0 ? (
+              <ul id={`${id}-options`} role="listbox" className="location-combobox-options">
+                {filteredOptions.map((option) => (
+                  <li key={option} role="option" aria-selected={option === value}>
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => choose(option)}
+                      className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-mint/10 hover:text-mint ${option === value ? "bg-mint/10 text-mint" : "text-text"}`}
+                    >
+                      <span>{option}</span>
+                      {option === value && <span aria-hidden className="text-xs">Selected</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="px-3 py-3 text-sm text-muted">
+                {loading ? "Loading options…" : emptyMessage}
+              </p>
+            )}
+            {loading && filteredOptions.length > 0 && (
+              <p className="border-t border-border px-3 py-2 text-xs text-muted">Refreshing city list…</p>
+            )}
+          </div>,
+          document.body,
+        )}
+      </div>
+    </div>
+  )
+}
+
 /* Meetup-style search + city field. Search hands off to Explore via ?q=. */
 function NavSearch() {
-  const { city, setCity } = useApp();
+  const { setCity } = useApp();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [searchParams] = useSearchParams();
@@ -109,50 +274,214 @@ function NavSearch() {
     setText(urlQuery);
   }
 
-  const [cityOpen, setCityOpen] = useState(false);
+  const [cityPickerOpen, setCityPickerOpen] = useState(false);
+  const [selectedCity, setSelectedCity] = useState(getSelectedCity);
+  const [draftCity, setDraftCity] = useState("");
+  const [draftCoordinates, setDraftCoordinates] = useState(getSelectedCityCenter);
+  const [selectedState, setSelectedState] = useState(
+    () => getSelectedState() || CITY_STATES[getSelectedCity()] || "",
+  );
+  const [cityOptions, setCityOptions] = useState([]);
+  const [citiesLoading, setCitiesLoading] = useState(false);
+  const [citiesError, setCitiesError] = useState("");
+  const [citiesRetry, setCitiesRetry] = useState(0);
+  const [cityResolving, setCityResolving] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationNote, setLocationNote] = useState("");
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const cityMarkerRef = useRef(null);
+  const locationDraftRef = useRef({ city: draftCity, state: selectedState, coordinates: draftCoordinates });
+  const cityRequestRef = useRef(0);
+
+  useEffect(() => {
+    locationDraftRef.current = {
+      city: draftCity,
+      state: selectedState,
+      coordinates: draftCoordinates,
+    };
+  }, [draftCity, selectedState, draftCoordinates]);
+
+  useEffect(() => {
+    if (!cityPickerOpen || !selectedState) return undefined;
+
+    const controller = new AbortController();
+    fetchCitiesForState(selectedState, controller.signal)
+      .then((cities) => {
+        if (!controller.signal.aborted) setCityOptions(cities);
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError") {
+          setCityOptions([]);
+          setCitiesError(error.message || `Couldn't load cities for ${selectedState}.`);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCitiesLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [cityPickerOpen, selectedState, citiesRetry]);
 
   async function useMyLocation() {
     setLocating(true);
     setLocationNote("");
-    const result = await requestCity();
-    setLocating(false);
-
-    if (result.ok && result.city) {
+    try {
+      const location = await requestIndianLocation();
+      cityRequestRef.current += 1;
+      setSelectedState(location.state);
+      setDraftCity(location.city);
+      setDraftCoordinates(location.coordinates);
+      setCityOptions([]);
+      setCitiesError("");
+      setCitiesLoading(true);
+      setLocationNote(`Location found: ${location.city}, ${location.state}.`);
       setLocationPref("granted");
-      setCity(result.city);
-      setCityOpen(false);
-    } else if (result.ok) {
-      setLocationPref("granted");
-      setLocationNote("Spontii isn't in your area yet. Pick a city below.");
-    } else if (result.reason === "denied") {
-      setLocationPref("denied");
-      setLocationNote(
-        "Location is blocked in your browser. Pick a city below.",
-      );
-    } else {
-      setLocationNote("Couldn't get your location. Pick a city below.");
+    } catch (error) {
+      setLocationNote(error.message || "Couldn't get your location. Try again.");
+    } finally {
+      setLocating(false);
     }
   }
 
-  // Close the city menu on outside click / Escape (touch has no mouseleave).
-  const cityRef = useRef(null);
+  function clearDraftCity() {
+    cityRequestRef.current += 1;
+    setDraftCity("");
+    setDraftCoordinates(null);
+    setCityResolving(false);
+    setLocationNote("");
+  }
+
+  async function chooseCity(city) {
+    clearDraftCity();
+    if (!city || !selectedState) return;
+
+    const requestId = cityRequestRef.current;
+    const controller = new AbortController();
+    setDraftCity(city);
+    setCityResolving(true);
+    setLocationNote(`Finding ${city} on the map…`);
+    try {
+      const coordinates = await geocodeCity(city, selectedState, controller.signal);
+      if (requestId !== cityRequestRef.current) return;
+      setDraftCity(city);
+      setDraftCoordinates(coordinates);
+      setLocationNote("");
+    } catch (error) {
+      if (error.name !== "AbortError" && requestId === cityRequestRef.current) {
+        setLocationNote(error.message || `Couldn't locate ${city}. Please choose another city.`);
+      }
+    } finally {
+      if (requestId === cityRequestRef.current) setCityResolving(false);
+    }
+  }
+
+  function chooseState(state) {
+    cityRequestRef.current += 1;
+    setSelectedState(state);
+    setCityOptions([]);
+    setCitiesError("");
+    setCitiesLoading(Boolean(state));
+    setDraftCity("");
+    setDraftCoordinates(null);
+    setCityResolving(false);
+    setLocationNote("");
+  }
+
+  function closeCityPicker() {
+    setCityPickerOpen(false);
+    setCitiesLoading(false);
+  }
+
   useEffect(() => {
-    if (!cityOpen) return;
-    function onPointer(event) {
-      if (!cityRef.current?.contains(event.target)) setCityOpen(false);
+    if (!cityPickerOpen || !mapContainerRef.current) return undefined;
+
+    const map = L.map(mapContainerRef.current, {
+      scrollWheelZoom: true,
+      zoomControl: true,
+    }).setView([22.5, 78.5], 4.5);
+    mapRef.current = map;
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+
+    const { city, state, coordinates } = locationDraftRef.current;
+    if (coordinates && city) {
+      map.flyTo(coordinates, 11, { duration: 0.7 });
+      cityMarkerRef.current = L.marker(coordinates, {
+        icon: cityMarkerIcon(true),
+      }).addTo(map).bindTooltip(city);
+    } else if (state && STATE_CENTERS[state]) {
+      map.flyTo(STATE_CENTERS[state], 6.5, { duration: 0.7 });
     }
-    function onKey(event) {
-      if (event.key === "Escape") setCityOpen(false);
-    }
-    document.addEventListener("pointerdown", onPointer);
-    document.addEventListener("keydown", onKey);
+
     return () => {
-      document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("keydown", onKey);
+      map.stop();
+      map.remove();
+      mapRef.current = null;
+      cityMarkerRef.current = null;
     };
-  }, [cityOpen]);
+  }, [cityPickerOpen]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!cityPickerOpen || !map) return;
+
+    if (draftCity && draftCoordinates) {
+      map.flyTo(draftCoordinates, 11, { duration: 0.8 });
+      if (cityMarkerRef.current) {
+        cityMarkerRef.current.setLatLng(draftCoordinates).setTooltipContent(draftCity);
+      } else {
+        cityMarkerRef.current = L.marker(draftCoordinates, {
+          icon: cityMarkerIcon(true),
+        }).addTo(map).bindTooltip(draftCity);
+      }
+    } else {
+      if (cityMarkerRef.current) {
+        map.removeLayer(cityMarkerRef.current);
+        cityMarkerRef.current = null;
+      }
+      if (selectedState && STATE_CENTERS[selectedState]) {
+        map.flyTo(STATE_CENTERS[selectedState], 6.5, { duration: 0.8 });
+      } else {
+        map.flyTo([22.5, 78.5], 4.5, { duration: 0.8 });
+      }
+    }
+  }, [cityPickerOpen, draftCity, draftCoordinates, selectedState])
+
+  useEffect(() => {
+    if (!cityPickerOpen) return undefined
+
+    function onKey(event) {
+      if (event.key === "Escape") closeCityPicker();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [cityPickerOpen]);
+
+  function applyCity() {
+    if (!draftCity || !selectedState || !draftCoordinates) return
+    setSelectedCity(draftCity)
+    setCity(draftCity)
+    saveSelectedCity(draftCity, selectedState, draftCoordinates)
+    setLocationPref("selected")
+    window.dispatchEvent(new Event("spontii:location-changed"))
+    closeCityPicker()
+  }
+
+  function openCityPicker() {
+    setCityPickerOpen(true)
+    const savedCity = getSelectedCity()
+    const savedState = getSelectedState() || CITY_STATES[savedCity] || ""
+    setDraftCity(savedCity)
+    setSelectedState(savedState)
+    setDraftCoordinates(getSelectedCityCenter() || CITY_CENTERS[savedCity] || null)
+    setCityOptions([])
+    setCitiesError("")
+    setCitiesLoading(Boolean(savedState))
+    setLocationNote("")
+  }
 
   function submitSearch(event) {
     event.preventDefault();
@@ -168,7 +497,8 @@ function NavSearch() {
   }
 
   return (
-    <div className="order-last flex h-11 w-full min-w-0 items-center rounded-xl border border-border bg-surface-2 transition-colors hover:border-text/25 focus-within:border-mint/60 focus-within:ring-2 focus-within:ring-mint/15 lg:order-none lg:h-10 lg:w-[340px] lg:shrink xl:w-[400px]">
+    <>
+    <div className="nav-search order-last flex h-11 w-full min-w-0 items-center rounded-xl border border-border bg-surface-2 transition-[border-color,box-shadow,width,background-color] duration-300 ease-out hover:border-text/25 focus-within:border-mint/60 focus-within:bg-surface-3 focus-within:ring-2 focus-within:ring-mint/15 lg:order-none lg:h-10 lg:w-[370px] lg:shrink-0 lg:focus-within:w-[450px] xl:w-[440px] xl:focus-within:w-[520px]">
       <form
         role="search"
         onSubmit={submitSearch}
@@ -188,75 +518,143 @@ function NavSearch() {
 
       <span aria-hidden className="h-5 w-px shrink-0 bg-border" />
 
-      <div ref={cityRef} className="relative h-full shrink-0">
+      <div className="relative h-full shrink-0">
         <button
           type="button"
-          onClick={() => setCityOpen((v) => !v)}
-          aria-label={`City: ${city}`}
-          aria-haspopup="menu"
-          aria-expanded={cityOpen}
-          className="group flex h-full items-center gap-1.5 rounded-r-xl pl-3 pr-3 text-sm font-semibold text-text transition-colors hover:bg-text/5 focus-visible:bg-text/5 focus-visible:outline-none"
+          onClick={openCityPicker}
+          aria-label={`Location: ${selectedCity || "Your location"}`}
+          aria-haspopup="dialog"
+          aria-expanded={cityPickerOpen}
+          className={`group flex h-full items-center gap-1.5 rounded-r-xl pl-3 pr-3 text-sm font-semibold transition-colors hover:bg-text/5 focus-visible:bg-text/5 focus-visible:outline-none ${selectedCity ? "text-text" : "text-muted"}`}
         >
-          <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-            <span className="absolute inline-flex h-2.5 w-2.5 rounded-full bg-mint animate-radar opacity-75" />
-            <MapPinIcon className="relative z-10 h-4 w-4 text-mint" />
-          </span>
-          <span className="tracking-wide">{city}</span>
+          <MapPinIcon className="h-4 w-4 shrink-0 text-muted" />
+          <span className="tracking-wide">{selectedCity || "Your location"}</span>
           <ChevronDownIcon
-            className={`h-3.5 w-3.5 text-muted transition-transform ${cityOpen ? "rotate-180" : "group-hover:translate-y-0.5"}`}
+            className={`h-3.5 w-3.5 text-muted transition-transform ${cityPickerOpen ? "rotate-180" : "group-hover:translate-y-0.5"}`}
           />
         </button>
-        {cityOpen && (
-          <div
-            role="menu"
-            className="absolute right-0 z-50 mt-2 w-60 overflow-hidden rounded-xl border border-border bg-surface-2 shadow-xl"
-          >
-                <button
-                  type="button"
-                  onClick={useMyLocation}
-                  disabled={locating}
-                  className="flex w-full items-center gap-2 border-b border-border px-4 py-2.5 text-left text-sm font-semibold text-mint hover:bg-text/5 disabled:cursor-wait disabled:opacity-70"
-                >
-                  <NavigationIcon className="h-4 w-4 shrink-0" />
-                  {locating ? "Locating…" : "Use my current location"}
-                </button>
-                {locationNote && (
-                  <p
-                    role="status"
-                    className="border-b border-border px-4 py-2 text-xs leading-snug text-muted"
-                  >
-                    {locationNote}
-                  </p>
-                )}
-                {CITIES.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => {
-                      setCity(c);
-                      setCityOpen(false);
-                    }}
-                    className={`block w-full px-4 py-2 text-left text-sm hover:bg-text/5 ${
-                      c === city ? "text-mint font-semibold" : "text-text"
-                    }`}
-                  >
-                    {c}
-                  </button>
-                ))}
-          </div>
-        )}
       </div>
     </div>
+    {cityPickerOpen && createPortal(
+      <div
+        className="location-picker-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeCityPicker()
+        }}
+      >
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="location-picker-title"
+          className="location-picker-panel w-full max-w-5xl overflow-hidden rounded-3xl border border-border bg-surface-2 shadow-2xl"
+        >
+          <header className="flex items-center justify-between gap-4 border-b border-border px-5 py-4">
+            <div className="flex min-w-0 flex-nowrap items-center gap-2 whitespace-nowrap text-sm sm:text-base">
+              <h2 id="location-picker-title" className="shrink-0 whitespace-nowrap font-extrabold">Choose your location</h2>
+              <span aria-hidden className="shrink-0 text-muted">-</span>
+              <p className="min-w-0 truncate whitespace-nowrap text-muted">Select a state and city to explore nearby plans.</p>
+            </div>
+            <button
+              type="button"
+              onClick={closeCityPicker}
+              aria-label="Close location picker"
+              className="location-picker-close flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-muted transition-colors hover:bg-text/5 hover:text-text"
+            >
+              ×
+            </button>
+          </header>
+          <div className="space-y-4 p-5">
+            <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+              <LocationSearchSelect
+                key={`state-${cityPickerOpen}`}
+                id="location-state"
+                label="State / union territory"
+                value={selectedState}
+                options={INDIA_STATES.map(({ name }) => name)}
+                placeholder="Search all Indian states"
+                emptyMessage="No state matches that search"
+                onSelect={chooseState}
+                onInputChange={() => chooseState("")}
+              />
+              <LocationSearchSelect
+                key={`city-${selectedState}-${cityPickerOpen}`}
+                id="location-city"
+                label="City"
+                value={draftCity}
+                options={cityOptions}
+                placeholder={selectedState ? "Type to search cities" : "Choose a state first"}
+                disabled={!selectedState}
+                loading={citiesLoading}
+                emptyMessage={citiesError ? "City list unavailable" : "No city matches that search"}
+                onSelect={chooseCity}
+                onInputChange={clearDraftCity}
+              />
+              <button
+                type="button"
+                onClick={useMyLocation}
+                disabled={locating}
+                className="mt-auto inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-surface px-3 text-sm font-semibold text-mint transition duration-200 hover:border-mint/35 hover:bg-mint/10 disabled:opacity-60"
+              >
+                <NavigationIcon className="h-4 w-4" />
+                {locating ? "Locating…" : "Use my location"}
+              </button>
+            </div>
+            {citiesLoading && selectedState && (
+              <p role="status" className="text-xs text-muted">Loading cities in {selectedState}…</p>
+            )}
+            {citiesError && (
+              <p role="alert" className="flex items-center justify-between gap-3 text-xs text-danger">
+                <span>{citiesError}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCitiesLoading(true)
+                    setCitiesRetry((attempt) => attempt + 1)
+                  }}
+                  className="shrink-0 font-bold underline underline-offset-2"
+                >
+                  Retry
+                </button>
+              </p>
+            )}
+            {locationNote && <p role="status" className="text-xs text-muted">{locationNote}</p>}
+            <div
+              ref={mapContainerRef}
+              className="location-picker-map h-[clamp(340px,58vh,620px)] overflow-hidden rounded-2xl border border-border"
+              aria-label="Map of India and selected state or city"
+            />
+            <p className="text-xs text-muted">
+              Select a state to fly to it, then search and choose a city to zoom in.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeCityPicker}
+                className="rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-muted transition hover:text-text"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={applyCity}
+                disabled={!draftCity || !draftCoordinates || cityResolving}
+                className="rounded-xl bg-mint px-5 py-2.5 text-sm font-extrabold text-bg transition duration-200 hover:bg-mint/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Apply location
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>,
+      document.body,
+    )}
+    </>
   );
 }
 
 export default function Navbar() {
   const {
     currentUser,
-    updates,
-    notifOpen,
-    setNotifOpen,
-    hasUnreadNotifs,
-    setHasUnreadNotifs,
   } = useApp();
   const { isAuthenticated } = useAuth();
   const { pathname } = useLocation();
@@ -264,7 +662,7 @@ export default function Navbar() {
   return (
     <>
     <header className="sticky top-0 z-40 border-b border-border/60 bg-bg/90 backdrop-blur-md">
-      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3 sm:px-6 lg:flex-nowrap lg:py-4">
+      <div className="wide-screen-container mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3 sm:px-6 lg:flex-nowrap lg:py-4">
         {/* ================= LEFT SIDE: LOGO ================= */}
         <NavLink to="/" className="flex items-center shrink-0">
           <img
@@ -291,6 +689,16 @@ export default function Navbar() {
 
         {/* ================= RIGHT SIDE: INBOX + UTILITIES + CREATE ================= */}
         <div className="flex items-center gap-2 shrink-0 sm:gap-3">
+          <ThemeToggle />
+
+          {isAuthenticated && (
+            <>
+              <FriendsMenu />
+              <div className="hidden shrink-0 xl:block">
+                <PeopleSearch compact />
+              </div>
+            </>
+          )}
           <NavLink
             to="/inbox"
             className={({ isActive }) => `hidden md:flex ${tabClass({ isActive })}`}
@@ -300,45 +708,9 @@ export default function Navbar() {
             <TabTooltip>Inbox</TabTooltip>
           </NavLink>
 
-          <ThemeToggle />
-
           {isAuthenticated ? (
             <div className="flex items-center gap-2 shrink-0 sm:gap-3">
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    setNotifOpen((v) => !v);
-                    setHasUnreadNotifs(false);
-                  }}
-                  className="relative flex h-9 w-9 items-center justify-center rounded-full bg-surface text-muted transition-colors hover:bg-surface-3 hover:text-text"
-                  aria-label="Notifications"
-                >
-                  <BellIcon className="h-[18px] w-[18px]" />
-                  {hasUnreadNotifs && (
-                    <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-surface bg-mint" />
-                  )}
-                </button>
-                {notifOpen && (
-                  <div
-                    className="absolute right-0 mt-2 w-72 overflow-hidden rounded-xl border border-border bg-surface-2 p-2 shadow-xl z-50"
-                    onMouseLeave={() => setNotifOpen(false)}
-                  >
-                    {updates.length === 0 && (
-                      <div className="px-3 py-2 text-sm text-muted">
-                        You're all caught up.
-                      </div>
-                    )}
-                    {updates.map((u) => (
-                      <div
-                        key={u.id}
-                        className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-text/5"
-                      >
-                        {u.text}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <Notifications />
 
               <NavLink to="/profile">
                 <img
@@ -378,12 +750,13 @@ export default function Navbar() {
       aria-label="Primary"
       className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg/95 pb-[env(safe-area-inset-bottom)] md:hidden"
     >
-      <div className="mx-auto grid h-16 max-w-md grid-cols-5 px-1">
+      <div className="mx-auto grid h-16 max-w-xl grid-cols-6 px-1">
         <MobileNavItem to="/" icon={HomeIcon} label="Home" />
         <MobileNavItem to="/explore" icon={CompassIcon} label="Explore" />
         <MobileNavItem to="/create" icon={PlusIcon} label="Create" primary />
+        <MobileNavItem to="/people" icon={UsersIcon} label="People" />
         <MobileNavItem to="/inbox" icon={ChatIcon} label="Inbox" />
-        <MobileNavItem to="/profile" icon={UserIcon} label="Profile" />
+        <MobileNavItem to="/profile" icon={UserIcon} label="Me" />
       </div>
     </nav>
 

@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { useApp } from '../context/AppContext'
 import { useAuth } from '../context/AuthContext'
+import { apiRequest } from '../lib/api'
 
 import AvatarStack from '../components/AvatarStack'
 import { GuestJoinDialog, RequestSentDialog } from '../components/JoinDialogs'
@@ -36,18 +37,38 @@ export default function ActivityDetail() {
 
   const {
     activities,
+    currentUser,
     city,
     guest,
     createGuest,
     requestToJoin,
     getParticipation,
     getVisibleLocation,
+    completeActivity,
+    refreshServerActivities,
   } = useApp()
 
   const [shareState, setShareState] = useState(null)
   const [requestError, setRequestError] = useState(null)
+  const [completionError, setCompletionError] = useState('')
+  const [completing, setCompleting] = useState(false)
   // 'guest' (ask a logged-out visitor's first name) | 'sent' | null
   const [dialog, setDialog] = useState(null)
+  const [attendeesOpen, setAttendeesOpen] = useState(false)
+  const [attendees, setAttendees] = useState([])
+  const [attendeeLoading, setAttendeeLoading] = useState(false)
+  const [attendeeError, setAttendeeError] = useState('')
+  const [requestsOpen, setRequestsOpen] = useState(false)
+  const [joinRequests, setJoinRequests] = useState([])
+  const [requestsLoading, setRequestsLoading] = useState(false)
+  const [reviewingRequest, setReviewingRequest] = useState('')
+  const [requestListError, setRequestListError] = useState('')
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatMessages, setChatMessages] = useState([])
+  const [chatDraft, setChatDraft] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatSending, setChatSending] = useState(false)
+  const [chatError, setChatError] = useState('')
   // Focus target after a dialog closes (the action card shows the new status)
   const actionCardRef = useRef(null)
 
@@ -66,6 +87,32 @@ export default function ActivityDetail() {
   const activity = activities.find(
     (a) => a.id === id
   )
+  const participation = activity ? getParticipation(activity.id) : null
+  const hosting = participation?.status === 'hosting'
+  const approved = participation?.status === 'going'
+  const canUseLiveChat = Boolean(activity?.databaseBacked && (hosting || approved))
+
+  useEffect(() => {
+    if (!chatOpen || !canUseLiveChat) return undefined
+    let active = true
+    const loadMessages = async () => {
+      try {
+        const { messages } = await apiRequest(`/activities/${id}/chat`)
+        if (active && Array.isArray(messages)) setChatMessages(messages)
+        if (active) setChatError('')
+      } catch (error) {
+        if (active) setChatError(error.message)
+      } finally {
+        if (active) setChatLoading(false)
+      }
+    }
+    loadMessages()
+    const interval = window.setInterval(loadMessages, 4000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [id, chatOpen, canUseLiveChat])
 
   /* =========================================================
      PLAN NOT FOUND
@@ -98,18 +145,15 @@ export default function ActivityDetail() {
      REQUEST STATUS
   ========================================================= */
 
-  const participation =
-    getParticipation(activity.id)
-
   const { status, spotsLeft } = participation
 
   const pending = status === 'pending'
 
-  const approved = status === 'going'
+  const isApproved = status === 'going'
 
   const rejected = status === 'rejected'
 
-  const hosting = status === 'hosting'
+  const isHosting = status === 'hosting'
 
   /* =========================================================
      CAPACITY
@@ -119,7 +163,7 @@ export default function ActivityDetail() {
   ========================================================= */
 
   const isFull =
-    participation.isFull && !approved && !hosting
+    participation.isFull && !isApproved && !isHosting
 
   /* =========================================================
      LOCATION PRIVACY
@@ -155,8 +199,8 @@ export default function ActivityDetail() {
       : 'Log in to request to join this plan with your Spontii profile.',
   }
 
-  function sendRequest(applicant) {
-    const result = requestToJoin(activity.id, applicant)
+  async function sendRequest(applicant) {
+    const result = await requestToJoin(activity.id, applicant)
 
     if (!result?.success) {
       setRequestError(result?.message || 'Could not send request.')
@@ -173,7 +217,12 @@ export default function ActivityDetail() {
     }
 
     if (isAuthenticated) {
-      sendRequest()
+      void sendRequest()
+      return
+    }
+
+    if (activity.databaseBacked) {
+      navigate('/login', { state: loginState })
       return
     }
 
@@ -183,7 +232,7 @@ export default function ActivityDetail() {
     }
 
     if (guest) {
-      sendRequest(guest)
+      void sendRequest(guest)
     } else {
       setDialog('guest')
     }
@@ -193,7 +242,21 @@ export default function ActivityDetail() {
     const nextGuest = createGuest(name)
 
     if (nextGuest) {
-      sendRequest(nextGuest)
+      void sendRequest(nextGuest)
+    }
+  }
+
+  async function handleCompleteActivity() {
+    if (!activity.isHost || completing) return
+    setCompleting(true)
+    setCompletionError('')
+    try {
+      await completeActivity(activity.id)
+      navigate('/')
+    } catch (error) {
+      setCompletionError(error.message)
+    } finally {
+      setCompleting(false)
     }
   }
 
@@ -256,8 +319,90 @@ export default function ActivityDetail() {
     }
   }
 
+  async function openAttendees() {
+    setAttendeesOpen(true)
+    setAttendeeError('')
+    if (activity.databaseBacked && !canUseLiveChat) {
+      setAttendees([])
+      setAttendeeError('Attendee profiles are shared with the host and approved participants.')
+      return
+    }
+    setAttendeeLoading(true)
+    try {
+      if (activity.databaseBacked) {
+        const { attendees: rows } = await apiRequest(`/activities/${activity.id}/attendees`)
+        setAttendees(rows || [])
+      } else {
+        setAttendees(activity.going || [])
+      }
+    } catch (error) {
+      setAttendeeError(error.message)
+    } finally {
+      setAttendeeLoading(false)
+    }
+  }
+
+  async function openJoinRequests() {
+    setRequestsOpen(true)
+    setRequestsLoading(true)
+    setRequestListError('')
+    try {
+      const { requests: rows } = await apiRequest(`/activities/${activity.id}/requests`)
+      setJoinRequests(rows || [])
+    } catch (error) {
+      setRequestListError(error.message)
+    } finally {
+      setRequestsLoading(false)
+    }
+  }
+
+  async function reviewJoinRequest(requestId, action) {
+    setReviewingRequest(requestId)
+    setRequestListError('')
+    try {
+      await apiRequest(`/activities/${activity.id}/requests/${requestId}`, {
+        method: 'PATCH',
+        body: { action },
+      })
+      setJoinRequests((current) => current.filter((item) => item.id !== requestId))
+      refreshServerActivities().catch((error) =>
+        console.error('Failed to refresh events after reviewing a join request:', error),
+      )
+    } catch (error) {
+      setRequestListError(error.message)
+    } finally {
+      setReviewingRequest('')
+    }
+  }
+
+  async function sendChatMessage(event) {
+    event.preventDefault()
+    const text = chatDraft.trim()
+    if (!text || chatSending) return
+    setChatSending(true)
+    setChatError('')
+    try {
+      const { message } = await apiRequest(`/activities/${activity.id}/chat`, {
+        method: 'POST',
+        body: { text },
+      })
+      setChatDraft('')
+      setChatMessages((current) => [...current, {
+        ...message,
+        sender: { id: currentUser.id, name: currentUser.name },
+      }])
+      apiRequest(`/activities/${activity.id}/chat`)
+        .then(({ messages }) => setChatMessages(messages || []))
+        .catch((error) => console.error('Failed to refresh event live chat:', error))
+    } catch (error) {
+      setChatError(error.message)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
   return (
-    <div className="mx-auto max-w-[1600px] space-y-8 px-6 py-8">
+    <div className="wide-screen-container mx-auto max-w-[1600px] space-y-8 px-6 py-8">
 
       {/* =====================================================
           BACK
@@ -266,7 +411,7 @@ export default function ActivityDetail() {
       <button
         type="button"
         onClick={goBack}
-        className="-my-3 flex w-fit items-center gap-2 py-3 text-sm font-semibold text-muted transition-colors hover:text-text"
+        className="flex w-fit items-center gap-2 rounded-full border border-emerald-500 bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-emerald-700"
       >
         <ArrowLeftIcon className="h-4 w-4" />
 
@@ -322,8 +467,14 @@ export default function ActivityDetail() {
               TITLE
           ================================================= */}
 
-          <h1 className="mt-7 text-3xl font-extrabold leading-tight tracking-tight sm:text-5xl">
-            {activity.title}
+          <h1 className="mt-7 flex flex-wrap items-center gap-x-2 gap-y-1 leading-tight">
+            <span className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-extrabold uppercase tracking-wide text-white sm:text-sm">
+              Event Name
+            </span>
+            <span className="text-sm font-semibold text-white">-</span>
+            <span className="ml-1 text-xl font-extrabold tracking-tight text-white sm:text-2xl">
+              {activity.title}
+            </span>
           </h1>
 
 
@@ -384,11 +535,15 @@ export default function ActivityDetail() {
 
           <div className="mt-6 flex items-center gap-3">
 
-            <img
-              src={activity.host.avatar}
-              alt=""
-              className="h-11 w-11 shrink-0 rounded-full object-cover"
-            />
+            {activity.host.avatar ? (
+              <img
+                src={activity.host.avatar}
+                alt=""
+                className="h-11 w-11 shrink-0 rounded-full object-cover"
+              />
+            ) : (
+              <span aria-label="No host profile photo" className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-surface-3 text-xl">👤</span>
+            )}
 
             <div className="min-w-0">
 
@@ -425,14 +580,15 @@ export default function ActivityDetail() {
 
           <div className="mt-6 flex flex-wrap items-center gap-4 border-b border-border pb-6">
 
-            <span className="flex items-center gap-2 text-sm font-semibold">
-
+            <button
+              type="button"
+              onClick={openAttendees}
+              className="flex items-center gap-2 text-sm font-semibold transition hover:text-mint"
+              aria-label={`View attendees, ${activity.attendeeCount ?? activity.going.length} of ${activity.capacity} going`}
+            >
               <UsersIcon className="h-4 w-4 text-mint" />
-
-              {activity.going.length} /{' '}
-              {activity.capacity} going
-
-            </span>
+              {activity.attendeeCount ?? activity.going.length} / {activity.capacity} going
+            </button>
 
 
             {activity.vibeMatches > 0 && (
@@ -458,6 +614,20 @@ export default function ActivityDetail() {
               Share
 
             </button>
+
+            {activity.databaseBacked && activity.isHost && (
+              <button
+                type="button"
+                onClick={openJoinRequests}
+                className="flex items-center gap-2 rounded-full border border-mint/40 bg-mint-soft px-3.5 py-2 text-sm font-bold text-mint transition hover:bg-mint/15"
+              >
+                <UsersIcon className="h-4 w-4" />
+                Requests
+                <span className="grid min-h-5 min-w-5 place-items-center rounded-full bg-mint px-1 text-[11px] font-extrabold text-bg">
+                  {activity.pendingRequestCount || 0}
+                </span>
+              </button>
+            )}
 
             {shareState && (
               <span
@@ -495,18 +665,28 @@ export default function ActivityDetail() {
             {restricted ? (
               <p className="mt-4 flex items-center gap-2 text-sm text-muted">
                 <LockIcon className="h-4 w-4 shrink-0 text-mint" />
-                {activity.going.length}{' '}
-                {activity.going.length === 1 ? 'person is' : 'people are'}{' '}
+                {activity.attendeeCount ?? activity.going.length}{' '}
+                {(activity.attendeeCount ?? activity.going.length) === 1 ? 'person is' : 'people are'}{' '}
                 going. Log in to see who.
               </p>
+            ) : activity.databaseBacked && !hosting && !approved ? (
+              <button
+                type="button"
+                onClick={openAttendees}
+                className="mt-4 text-left text-sm text-muted transition hover:text-mint"
+              >
+                {activity.attendeeCount ?? 1} {((activity.attendeeCount ?? 1) === 1) ? 'person is' : 'people are'} going. Get approved to view attendee profiles.
+              </button>
             ) : (
             <div className="mt-4 flex flex-wrap items-center gap-4">
 
-              <AvatarStack
-                people={activity.going}
-                max={8}
-                size={40}
-              />
+              {activity.databaseBacked ? (
+                <button type="button" onClick={openAttendees} className="rounded-full focus:outline-none focus:ring-2 focus:ring-mint">
+                  <AvatarStack people={activity.going} max={8} size={40} />
+                </button>
+              ) : (
+                <AvatarStack people={activity.going} max={8} size={40} />
+              )}
 
 
               <p className="text-sm text-muted">
@@ -515,7 +695,7 @@ export default function ActivityDetail() {
                   .slice(0, 3)
                   .map(
                     (p) =>
-                      p.name.split(' ')[0]
+                      (p.name || 'Someone').split(' ')[0]
                   )
                   .join(', ')}
 
@@ -529,7 +709,7 @@ export default function ActivityDetail() {
                     }`
                   : ''}{' '}
 
-                are already in.
+                {activity.going.length === 1 ? 'is already in.' : 'are already in.'}
 
               </p>
 
@@ -543,15 +723,155 @@ export default function ActivityDetail() {
               ABOUT
           ================================================= */}
 
-          <div className="mt-8">
+          <div className="mt-8 rounded-3xl border border-border bg-surface-2 p-4 shadow-sm sm:p-6">
 
-            <h3 className="text-xl font-extrabold">
-              About this plan
-            </h3>
+            <div className="mb-5 flex flex-wrap items-end justify-between gap-2 border-b border-border pb-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-mint">The details</p>
+                <h3 className="mt-1 text-xl font-extrabold">About this plan</h3>
+              </div>
+              {activity.tags?.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {activity.tags.filter((tag) => tag !== 'New event').map((tag) => (
+                    <span key={tag} className="rounded-full bg-mint/10 px-2.5 py-1 text-xs font-medium text-mint">
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
 
-            <p className="mt-2 leading-relaxed text-muted">
-              {activity.description}
-            </p>
+            <div className="rounded-xl border border-red-900/70 bg-red-950/55 p-3.5">
+              <p className="text-xs font-extrabold uppercase tracking-wide text-red-200">Details</p>
+              <p className="mt-1.5 text-sm font-bold leading-relaxed text-white">{activity.description}</p>
+            </div>
+
+            {(activity.venueName || activity.landmark) && (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {activity.venueName && (
+                  <div className="rounded-xl border border-mint/25 bg-mint/5 p-3">
+                    <p className="text-[10px] font-extrabold uppercase tracking-wide text-mint">Venue</p>
+                    <p className="mt-1.5 break-words text-sm font-bold leading-relaxed text-text">{activity.venueName}</p>
+                  </div>
+                )}
+                {activity.landmark && (
+                  <div className="rounded-xl border border-mint/25 bg-mint/5 p-3">
+                    <p className="text-[10px] font-extrabold uppercase tracking-wide text-mint">Landmark</p>
+                    <p className="mt-1.5 break-words text-sm font-bold leading-relaxed text-text">{activity.landmark}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {(activity.attendeePreference || activity.experienceLevel || activity.preferences?.length > 0) && (
+              <div className="mt-4 rounded-xl border border-border bg-bg/35 p-3.5">
+                <p className="text-xs font-bold uppercase tracking-wide text-muted">Guest preferences</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {activity.attendeePreference && activity.attendeePreference !== 'Anyone' && (
+                    <span className="rounded-full border border-border px-2.5 py-1 text-xs text-text">
+                      {activity.attendeePreference}
+                    </span>
+                  )}
+                  {activity.experienceLevel && activity.experienceLevel !== 'Any experience' && (
+                    <span className="rounded-full border border-border px-2.5 py-1 text-xs text-text">
+                      {activity.experienceLevel}
+                    </span>
+                  )}
+                  {activity.preferences?.map((preference) => (
+                    <span key={preference} className="rounded-full border border-border px-2.5 py-1 text-xs text-text">
+                      {preference}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {activity.startsAt && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="rounded-full border border-border px-3 py-1.5 text-xs text-muted">
+                  Food · {activity.foodAvailable
+                    ? activity.foodPreference === 'vegetarian'
+                      ? 'Vegetarian'
+                      : activity.foodPreference === 'non-vegetarian'
+                        ? 'Non-vegetarian'
+                        : activity.foodPreference === 'both'
+                          ? 'Veg & non-veg'
+                          : 'Available'
+                    : 'Not provided'}
+                </span>
+                <span className="rounded-full border border-border px-3 py-1.5 text-xs text-muted">
+                  Beverages · {activity.beveragesAvailable ? 'Available' : 'Not provided'}
+                </span>
+                <span className="rounded-full border border-border px-3 py-1.5 text-xs text-muted">
+                  Alcoholic drinks · {activity.drinksAvailable ? 'Available' : 'Not provided'}
+                </span>
+              </div>
+            )}
+
+            {(activity.photos?.length > 0 || activity.videos?.length > 0) && (
+              <section className="mt-5 rounded-2xl border border-border bg-bg/45 p-3.5 sm:p-4" aria-label="Event gallery">
+                <header className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-text">Event gallery</h4>
+                    <p className="mt-0.5 text-xs text-muted">Photos and videos shared by the host</p>
+                  </div>
+                  <span className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] font-semibold text-muted">
+                    {activity.photos?.length || 0} photos · {activity.videos?.length || 0} videos
+                  </span>
+                </header>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {activity.photos?.map((photo, index) => (
+                    <a
+                      key={photo}
+                      href={photo}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open host photo ${index + 1}`}
+                      className="group relative aspect-[4/3] overflow-hidden rounded-xl border border-border bg-surface"
+                    >
+                      <img
+                        src={photo}
+                        alt={`Host-shared event ${index + 1}`}
+                        loading="lazy"
+                        className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
+                      />
+                    </a>
+                  ))}
+                  {activity.videos?.map((video, index) => (
+                    <video
+                      key={video}
+                      src={video}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      aria-label={`Host-shared event video ${index + 1}`}
+                      className="aspect-[4/3] w-full rounded-xl border border-border bg-black object-cover"
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {activity.durationMinutes > 0 && (
+              <p className="mt-3 text-xs text-muted">
+                Duration: {Math.floor(activity.durationMinutes / 60)} hr
+                {activity.durationMinutes % 60
+                  ? ` ${activity.durationMinutes % 60} min`
+                  : ''}
+              </p>
+            )}
+
+            {activity.coordinates && (
+              <a
+                href={`https://www.openstreetmap.org/?mlat=${activity.coordinates[0]}&mlon=${activity.coordinates[1]}#map=16/${activity.coordinates[0]}/${activity.coordinates[1]}`}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-mint hover:underline"
+              >
+                <MapPinIcon className="h-3.5 w-3.5" />
+                Open venue map
+              </a>
+            )}
 
           </div>
 
@@ -613,6 +933,27 @@ export default function ActivityDetail() {
               />
 
             </div>
+
+            {activity.isHost && (
+              <div className="mt-4 rounded-xl border border-mint/25 bg-mint-soft p-4">
+                <p className="text-sm font-bold text-text">Hosting this event?</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">
+                  Complete it when it’s over to remove it from your homepage and clear its event notification.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleCompleteActivity}
+                  disabled={completing}
+                  className="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-mint/40 bg-mint px-3 text-xs font-bold text-bg transition hover:bg-mint/90 disabled:cursor-wait disabled:opacity-60"
+                >
+                  <CheckIcon className="h-4 w-4" />
+                  {completing ? 'Completing event…' : 'Complete activity & close'}
+                </button>
+                {completionError && (
+                  <p role="alert" className="mt-2 text-xs font-semibold text-danger">{completionError}</p>
+                )}
+              </div>
+            )}
 
 
             {preference !== 'any' && !hosting && !approved && (
@@ -691,7 +1032,17 @@ export default function ActivityDetail() {
               </p>
             )}
 
-            {!isAuthenticated && !isPrivate && !pending && !requestError && (
+            {!isAuthenticated && activity.databaseBacked && !pending && !requestError && (
+              <p className="mt-3 text-xs text-muted">
+                Log in to send a join request with your Spontii profile.{' '}
+                <Link to="/login" state={loginState} className="font-semibold text-mint hover:underline">
+                  Log in
+                </Link>
+                .
+              </p>
+            )}
+
+            {!isAuthenticated && !activity.databaseBacked && !isPrivate && !pending && !requestError && (
               <p className="mt-3 text-xs text-muted">
                 No account needed. You can request as a guest, or{' '}
                 <Link to="/login" state={loginState} className="font-semibold text-mint hover:underline">
@@ -804,16 +1155,20 @@ export default function ActivityDetail() {
 
             <div className="mt-4 grid grid-cols-2 gap-2">
 
-              <Link
-                to="/inbox"
-                className="flex h-10 items-center justify-center gap-2 rounded-xl border border-border text-sm font-semibold text-text transition-colors hover:border-mint/40 hover:text-mint"
+              <button
+                type="button"
+                onClick={() => {
+                  if (!canUseLiveChat) return
+                  if (!chatOpen) setChatLoading(true)
+                  setChatOpen((open) => !open)
+                }}
+                disabled={!canUseLiveChat}
+                title={!canUseLiveChat ? 'Live chat unlocks when the host approves you.' : undefined}
+                className="flex h-10 items-center justify-center gap-2 rounded-xl border border-border text-sm font-semibold text-text transition-colors hover:border-mint/40 hover:text-mint disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:border-border disabled:hover:text-text"
               >
-
                 <ChatIcon className="h-4 w-4" />
-
-                Messages
-
-              </Link>
+                {chatOpen ? 'Close live chat' : 'Live chat'}
+              </button>
 
 
               <button
@@ -847,21 +1202,71 @@ export default function ActivityDetail() {
                 SAFETY
             ================================================= */}
 
-            <div className="mt-5 border-t border-border pt-4">
-
-              <div className="flex items-start gap-2">
-
-                <ShieldCheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-mint" />
-
-                <p className="text-xs leading-relaxed text-muted">
-                  Verified profiles and visible trust
-                  signals help people make better decisions
-                  before meeting.
-                </p>
-
-              </div>
-
-            </div>
+            {canUseLiveChat && chatOpen && (
+              <section className="mt-5 flex h-[min(72vh,680px)] min-h-[540px] flex-col overflow-hidden rounded-2xl border border-mint/20 bg-surface-2 shadow-[0_18px_55px_rgba(0,0,0,0.2)]" aria-label="Event live chat">
+                <header className="flex items-center justify-between border-b border-border bg-surface px-4 py-3.5">
+                  <div className="flex items-center gap-3">
+                    <span className="relative grid h-10 w-10 place-items-center rounded-xl border border-mint/20 bg-mint/10">
+                      <ChatIcon className="h-4 w-4 text-mint" />
+                      <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-mint" />
+                    </span>
+                    <div>
+                      <h3 className="text-sm font-bold text-text">Live event chat</h3>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setChatOpen(false)}
+                    aria-label="Close live chat"
+                    className="rounded-lg border border-red-950 bg-red-900 px-3 py-1.5 text-xs font-bold text-white transition hover:border-red-800 hover:bg-red-800"
+                  >
+                    Close
+                  </button>
+                </header>
+                <div className="flex-1 space-y-3 overflow-y-auto bg-bg/25 px-4 py-4" aria-live="polite">
+                  {chatLoading && chatMessages.length === 0 && <p className="rounded-xl border border-border bg-surface px-4 py-3 text-xs text-muted">Loading the conversation…</p>}
+                  {!chatLoading && chatMessages.length === 0 && (
+                    <div className="flex h-full min-h-56 flex-col items-center justify-center px-5 text-center">
+                      <span className="grid h-12 w-12 place-items-center rounded-2xl border border-mint/20 bg-mint/10 text-mint"><ChatIcon className="h-5 w-5" /></span>
+                      <p className="mt-3 text-sm font-bold text-text">The conversation starts here</p>
+                      <p className="mt-1 max-w-xs text-xs leading-relaxed text-muted">Say hello to the other attendees and start planning the fun.</p>
+                    </div>
+                  )}
+                  {chatMessages.map((message) => (
+                    <article key={message.id} className="rounded-2xl border border-border/80 bg-surface px-3.5 py-3 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-mint/10 text-[10px] font-extrabold text-mint">{(message.sender.name || '?').trim().charAt(0).toUpperCase()}</span>
+                          <span className="truncate text-xs font-bold text-text">{message.sender.name}</span>
+                        </span>
+                        <time className="shrink-0 text-[10px] text-muted">
+                          {new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                        </time>
+                      </div>
+                      <p className="mt-2 break-words pl-9 text-sm leading-relaxed text-muted">{message.text}</p>
+                    </article>
+                  ))}
+                </div>
+                {chatError && <p role="alert" className="mx-3 mb-2 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{chatError}</p>}
+                <form onSubmit={sendChatMessage} className="flex gap-2 border-t border-border bg-surface p-3.5">
+                  <input
+                    value={chatDraft}
+                    onChange={(event) => setChatDraft(event.target.value)}
+                    maxLength={2000}
+                    placeholder="Message the attendees…"
+                    aria-label="Chat message"
+                    className="min-w-0 flex-1 rounded-xl border border-border bg-bg px-3.5 py-2.5 text-sm text-text outline-none transition focus:border-mint focus:ring-2 focus:ring-mint/10"
+                  />
+                  <button
+                    type="submit"
+                    disabled={chatSending || !chatDraft.trim()}
+                    className="rounded-xl bg-mint px-4 py-2.5 text-sm font-bold text-bg transition hover:bg-mint/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {chatSending ? 'Sending…' : 'Send'}
+                  </button>
+                </form>
+              </section>
+            )}
 
           </div>
 
@@ -918,6 +1323,89 @@ export default function ActivityDetail() {
           onClose={() => setDialog(null)}
           returnFocusRef={actionCardRef}
         />
+      )}
+
+      {attendeesOpen && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setAttendeesOpen(false)
+        }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="attendees-title" className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-surface-2 p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="attendees-title" className="text-xl font-extrabold text-text">People going</h2>
+                <p className="mt-1 text-sm text-muted">{activity.attendeeCount ?? activity.going.length} of {activity.capacity} spots filled</p>
+              </div>
+              <button type="button" onClick={() => setAttendeesOpen(false)} className="rounded-lg px-3 py-1.5 text-sm font-semibold text-muted hover:bg-surface hover:text-text">Close</button>
+            </div>
+            {attendeeLoading && <p className="py-8 text-center text-sm text-muted">Loading attendee profiles…</p>}
+            {attendeeError && <p role="alert" className="mt-4 rounded-lg bg-danger/10 p-3 text-sm text-danger">{attendeeError}</p>}
+            {!attendeeLoading && !attendeeError && (
+              <div className="mt-5 space-y-3">
+                {attendees.map((person) => (
+                  <article key={person.id} className="flex items-start gap-3 rounded-xl border border-border bg-surface p-3">
+                    <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-mint-soft text-sm font-bold text-mint">
+                      {(person.name || 'S').slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-bold text-text">{person.name}{person.id === activity.host.id ? <span className="ml-2 rounded-full bg-mint-soft px-2 py-0.5 text-[10px] font-bold uppercase text-mint">Host</span> : null}</p>
+                      <p className="mt-0.5 text-xs text-muted">{person.tagline || person.city || 'Spontii member'}</p>
+                      {person.bio && <p className="mt-2 text-sm leading-relaxed text-muted">{person.bio}</p>}
+                    </div>
+                  </article>
+                ))}
+                {attendees.length === 0 && <p className="py-6 text-center text-sm text-muted">No approved attendee profiles yet.</p>}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {requestsOpen && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setRequestsOpen(false)
+        }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="requests-title" className="max-h-[82vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-surface-2 p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="requests-title" className="text-xl font-extrabold text-text">Join requests</h2>
+                <p className="mt-1 text-sm text-muted">Review profiles and choose who can attend.</p>
+              </div>
+              <button type="button" onClick={() => setRequestsOpen(false)} className="rounded-lg px-3 py-1.5 text-sm font-semibold text-muted hover:bg-surface hover:text-text">Close</button>
+            </div>
+            {requestsLoading && <p className="py-8 text-center text-sm text-muted">Loading requests…</p>}
+            {requestListError && <p role="alert" className="mt-4 rounded-lg bg-danger/10 p-3 text-sm text-danger">{requestListError}</p>}
+            {!requestsLoading && !requestListError && joinRequests.length === 0 && (
+              <p className="py-10 text-center text-sm text-muted">You’re all caught up. New requests will appear here.</p>
+            )}
+            {!requestsLoading && joinRequests.length > 0 && (
+              <div className="mt-5 space-y-3">
+                {joinRequests.map((item) => (
+                  <article key={item.id} className="rounded-xl border border-border bg-surface p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-mint-soft font-bold text-mint">
+                        {(item.applicant.name || 'S').slice(0, 1).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-bold text-text">{item.applicant.name}</h3>
+                          {item.applicant.verified && <span className="rounded-full bg-mint-soft px-2 py-0.5 text-[10px] font-bold text-mint">Verified profile</span>}
+                        </div>
+                        <p className="mt-1 text-xs text-muted">{item.applicant.tagline || item.applicant.city || 'Spontii member'}</p>
+                        {item.applicant.bio && <p className="mt-2 text-sm leading-relaxed text-muted">{item.applicant.bio}</p>}
+                        {!!item.applicant.tags?.length && <p className="mt-2 text-xs text-mint">{item.applicant.tags.join(' · ')}</p>}
+                        <p className="mt-2 text-[11px] text-muted">Requested {new Date(item.requestedAt).toLocaleString()}</p>
+                        <div className="mt-4 flex justify-end gap-2">
+                          <button type="button" disabled={Boolean(reviewingRequest)} onClick={() => void reviewJoinRequest(item.id, 'reject')} className="rounded-lg border border-border px-4 py-2 text-xs font-bold text-muted hover:border-danger/50 hover:text-danger disabled:opacity-50">Deny</button>
+                          <button type="button" disabled={Boolean(reviewingRequest)} onClick={() => void reviewJoinRequest(item.id, 'approve')} className="rounded-lg bg-mint px-4 py-2 text-xs font-bold text-bg hover:bg-mint/90 disabled:opacity-50">{reviewingRequest === item.id ? 'Saving…' : 'Accept'}</button>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       )}
 
     </div>

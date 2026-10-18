@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import { people } from '../data/mockData'
 import { useApp } from '../context/AppContext'
 import { isPrivateActivity } from '../lib/activities'
 
 import ActivityCard from '../components/ActivityCard'
-import PersonCard from '../components/PersonCard'
+import EventPlanIdeas from '../components/EventPlanIdeas'
+import FriendsSpotlight from '../components/FriendsSpotlight'
 import LocationPrompt from '../components/LocationPrompt'
 
 import {
@@ -88,7 +88,7 @@ const HERO_PILLS = [
 ]
 
 export default function Home() {
-  const { activities, city } = useApp()
+  const { databaseActivities, city } = useApp()
   const navigate = useNavigate()
 
   const [slide, setSlide] = useState(0)
@@ -101,65 +101,37 @@ export default function Home() {
     return () => clearInterval(timer)
   }, [])
 
-  /*
-   * Home only surfaces public plans (it is also the logged-out landing).
-   */
-  const publicActivities = activities.filter(
-    (a) => !isPrivateActivity(a),
+  const cityActivities = databaseActivities.filter(
+    (activity) => activity.city?.toLocaleLowerCase() === city.toLocaleLowerCase(),
   )
+  const publicActivities = cityActivities.filter((activity) =>
+    !isPrivateActivity(activity),
+  )
+  const myEvents = databaseActivities
+    .filter((activity) => activity.isHost && activity.status === 'active')
+    .sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt))
+  const suggestions = publicActivities
+    .filter((activity) => !activity.isHost)
+    .slice(0, 4)
+  const todayCount = publicActivities.filter((activity) => activity.date === 'Today').length
 
-  const featured = publicActivities[0]
-  const curated = publicActivities.slice(1, 5)
-
-  const todayCount = publicActivities.filter(
-    (a) => a.date === 'Today',
-  ).length
-
-          function goToPill(pill) {
-            const params = new URLSearchParams();
-
-            // 1. Pass down Category parameters matching your exact card profiles
-            if (pill.category && pill.category !== "Everything") {
-              params.set("category", pill.category);
-            }
-
-            // 2. Handle specific Date parameters ("I'm free tonight" -> Today)
-            if (pill.id === "free-tonight") {
-              params.set("date", "Today");
-            }
-
-            // 3. Directly bind your original landing card actions to specific categories
-            if (pill.id === "meet-people") {
-              params.set("category", "Social");
-            } else if (pill.id === "active") {
-              params.set("category", "Sports");
-            } else if (pill.id === "outdoors") {
-              params.set("category", "Outdoors");
-            } else if (pill.id === "food") {
-              params.set("category", "Food");
-            } else if (pill.id === "chill") {
-              params.set("category", "Games");
-            }
-
-            // Clean backtick navigation string fixes the raw '\$' url character injection
-            navigate(
-              params.toString() ? `/explore?${params.toString()}` : "/explore",
-            );
-          }
-
-
-
-
+  function explorePill(pill) {
+    const params = new URLSearchParams()
+    if (pill.category && pill.category !== 'Everything') params.set('category', pill.category)
+    if (pill.id === 'free-tonight') params.set('date', 'Today')
+    params.set('city', city)
+    navigate(`/explore?${params.toString()}`)
+  }
 
   return (
-    <div className="mx-auto max-w-[1600px] px-5 py-6 sm:px-6 sm:py-8">
+    <div className="wide-screen-container mx-auto max-w-[1600px] px-5 py-6 sm:px-6 sm:py-8">
 
       {/* Optional location request (landing page only) */}
       <LocationPrompt />
 
       {/* ================= HERO ================= */}
 
-      <section data-theme="dark" className="relative isolate flex min-h-[460px] items-center overflow-hidden rounded-3xl border border-border sm:min-h-[500px] lg:min-h-[560px]">
+      <section data-theme="dark" className="home-hero-section relative isolate flex min-h-[460px] items-center overflow-hidden rounded-3xl border border-border sm:min-h-[500px] lg:min-h-[560px]">
 
         <video
           key={HERO_SLIDES[slide].id}
@@ -178,12 +150,12 @@ export default function Home() {
         <div className="w-full min-w-0 px-5 py-14 sm:px-12 lg:px-16">
 
           {/* Same text measure as before; only the chip row runs wider */}
-          <div className="max-w-[632px] sm:max-w-[576px] lg:max-w-[544px]">
+          <div className="home-hero-copy max-w-[632px] sm:max-w-[576px] lg:max-w-[544px]">
             <p className="text-xs font-bold uppercase tracking-[0.16em] text-mint">
               {todayCount} {todayCount === 1 ? 'plan' : 'plans'} today in {city}
             </p>
 
-            <h1 className="mt-5 text-[2.15rem] font-extrabold leading-[1.04] tracking-tight text-white sm:text-6xl lg:text-7xl">
+            <h1 className="home-hero-title mt-5 text-[2.15rem] font-extrabold leading-[1.04] tracking-tight text-white sm:text-6xl lg:text-7xl">
               What's worth
               <br />
               <span className="text-mint">doing tonight?</span>
@@ -206,7 +178,7 @@ export default function Home() {
                 <button
                   key={pill.id}
                   type="button"
-                  onClick={() => goToPill(pill)}
+                  onClick={() => explorePill(pill)}
                   className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-bg/60 px-3.5 py-2 text-[13px] font-medium text-muted backdrop-blur-sm transition-colors hover:border-mint/50 hover:text-text"
                 >
                   <Icon className="h-3.5 w-3.5" />
@@ -236,170 +208,66 @@ export default function Home() {
       </section>
 
       <div className="mt-14 space-y-14">
+        <FriendsSpotlight />
 
-        {/* ================= RIGHT NOW ================= */}
-
-        <section className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-
-          <div className="lg:col-span-2">
-
-            <div className="mb-4 flex items-center justify-between">
-
+        {myEvents.length > 0 && (
+          <section>
+            <div className="mb-4 flex items-end justify-between gap-4">
               <div>
-                <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-mint">
-                  Right now in {city}
-                </h2>
-
-                <h3 className="mt-1 text-2xl font-extrabold">
-                  People are already out.
-                </h3>
+                <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-mint">Your plans</h2>
+                <h3 className="mt-1 text-2xl font-extrabold">My events</h3>
               </div>
-
-              <Link
-                to="/explore"
-                className="-my-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2.5 text-sm font-semibold text-muted transition-colors hover:text-text"
-              >
-                See all
-                <ArrowRightIcon className="h-4 w-4" />
+              <Link to="/explore" className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-muted hover:text-text">
+                Explore all <ArrowRightIcon className="h-4 w-4" />
               </Link>
-
             </div>
-
-            {featured && (
-              <ActivityCard
-                activity={featured}
-                featured
-              />
-            )}
-
-          </div>
-
-          {/* ================= SIDEBAR ================= */}
-
-          <div className="space-y-6">
-
-            <div className="rounded-2xl border border-mint/30 bg-mint-soft p-5">
-
-              <h4 className="text-xs font-bold uppercase tracking-wide text-mint">
-                {city} tonight
-              </h4>
-
-              <p className="mt-2 text-lg font-bold leading-snug">
-                The city has {todayCount}{' '}
-                {todayCount === 1 ? 'plan' : 'plans'} worth showing up
-                for today.
-              </p>
-
-              <Link
-                to="/explore"
-                className="mt-4 flex h-10 items-center justify-center gap-2 rounded-xl bg-surface-2 px-4 text-sm font-semibold transition-colors hover:bg-text/5"
-              >
-                Explore today's plans
-              </Link>
-
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {myEvents.map((activity) => (
+                <ActivityCard key={activity.id} activity={activity} />
+              ))}
             </div>
-
-            <div className="rounded-2xl border border-border bg-surface-2 p-5">
-
-              <h4 className="flex items-center gap-2 font-bold">
-                Trust is the feature
-              </h4>
-
-              <p className="mt-2 text-sm text-muted">
-                Every person you see is building a
-                real-world reputation through showing up,
-                hosting well and making good connections.
-              </p>
-
-              <span className="mt-3 inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs font-semibold text-mint">
-                Verified
-
-                <span className="text-muted">
-                  Identity outcomes, never documents.
-                </span>
-              </span>
-
-            </div>
-
-          </div>
-        </section>
-
-        {/* ================= PEOPLE ================= */}
+          </section>
+        )}
 
         <section>
-
-          <div className="mb-4 flex items-center justify-between">
-
+          <div className="mb-4 flex items-end justify-between gap-4">
             <div>
-              <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-mint">
-                The social layer
-              </h2>
-
-              <h3 className="mt-1 text-2xl font-extrabold">
-                People you may vibe with.
-              </h3>
+              <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-mint">Plan ideas · {city}</h2>
+              <h3 className="mt-1 text-2xl font-extrabold">Events you could plan.</h3>
             </div>
-
             <Link
-              to="/profile"
-              className="-my-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2.5 text-sm font-semibold text-muted transition-colors hover:text-text"
+              to={`/explore?${new URLSearchParams({ city }).toString()}`}
+              className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-muted hover:text-text"
             >
-              Your passport
-              <ArrowRightIcon className="h-4 w-4" />
+              Explore all <ArrowRightIcon className="h-4 w-4" />
             </Link>
-
           </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
-            {people.map((p) => (
-              <PersonCard
-                key={p.id}
-                person={p}
-              />
-            ))}
-
-          </div>
+          {suggestions.length ? (
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {suggestions.map((activity) => (
+                <ActivityCard
+                  key={activity.id}
+                  activity={activity}
+                  actionLabel="Explore"
+                  actionTo={`/explore?${new URLSearchParams({
+                    category: activity.category,
+                    city: activity.city || city,
+                  }).toString()}`}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-border bg-surface/60 p-8 text-center">
+              <p className="font-semibold text-text">No event ideas in {city} yet.</p>
+              <p className="mt-2 text-sm text-muted">Explore other places or be the first to publish a plan here.</p>
+              <Link to={`/explore?${new URLSearchParams({ city }).toString()}`} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-mint px-4 py-2.5 text-sm font-bold text-bg">
+                Explore {city} <ArrowRightIcon className="h-4 w-4" />
+              </Link>
+            </div>
+          )}
         </section>
 
-        {/* ================= CURATED PLANS ================= */}
-
-        <section>
-
-          <div className="mb-4 flex items-center justify-between">
-
-            <div>
-              <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-mint">
-                Curated for you
-              </h2>
-
-              <h3 className="mt-1 text-2xl font-extrabold">
-                Plans for your next few hours.
-              </h3>
-            </div>
-
-            <Link
-              to="/explore"
-              className="-my-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2.5 text-sm font-semibold text-muted transition-colors hover:text-text"
-            >
-              Explore all
-              <ArrowRightIcon className="h-4 w-4" />
-            </Link>
-
-          </div>
-
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-
-            {curated.map((a) => (
-              <ActivityCard
-                key={a.id}
-                activity={a}
-              />
-            ))}
-
-          </div>
-        </section>
-
+        <EventPlanIdeas />
       </div>
 
     </div>

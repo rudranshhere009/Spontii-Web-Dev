@@ -1,4 +1,5 @@
 import {
+  useCallback,
   createContext,
   useContext,
   useEffect,
@@ -25,7 +26,14 @@ import {
   validRequests,
   visibleLocationFor,
 } from '../lib/activities'
-import { CITIES, CITY_KEY, DEFAULT_CITY } from '../lib/location'
+import {
+  CITY_KEY,
+  CITY_STATES,
+  DEFAULT_CITY,
+  getSelectedCity,
+  getSelectedState,
+} from '../lib/location'
+import { apiRequest } from '../lib/api'
 
 const AppContext = createContext(null)
 
@@ -98,6 +106,30 @@ function loadCreated() {
       venue: activity.venue || activity.location,
     }
   })
+}
+
+function localizeSavedActivity(activity) {
+  if (!activity.startsAt) return activity
+
+  const start = new Date(activity.startsAt)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const eventDay = new Date(start)
+  eventDay.setHours(0, 0, 0, 0)
+  const dayOffset = Math.round((eventDay - today) / (24 * 60 * 60 * 1000))
+  const weekday = start.toLocaleDateString(undefined, { weekday: 'long' })
+  const date = dayOffset === 0
+    ? 'Today'
+    : dayOffset === 1
+      ? 'Tomorrow'
+      : ['Friday', 'Saturday', 'Sunday'].includes(weekday) && dayOffset < 7
+        ? 'This weekend'
+        : start.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+  const time = start.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+  return { ...activity, date, time, when: `${date} · ${time}` }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -182,6 +214,11 @@ export function AppProvider({ children }) {
   } = useAuth()
 
   const [created, setCreated] = useState(() => loadCreated())
+  const [serverActivities, setServerActivities] = useState([])
+  const databaseActivities = useMemo(
+    () => serverActivities.map(localizeSavedActivity),
+    [serverActivities],
+  )
 
   const [joinRequests, setJoinRequests] = useState(() =>
     loadJoinRequests()
@@ -198,7 +235,7 @@ export function AppProvider({ children }) {
   /* City (manual pick or matched from shared location) survives refresh. */
   const [city, setCity] = useState(() => {
     const saved = loadJSON(CITY_KEY, DEFAULT_CITY)
-    return CITIES.includes(saved) ? saved : DEFAULT_CITY
+    return typeof saved === 'string' && saved.trim() ? saved : DEFAULT_CITY
   })
 
   /*
@@ -210,12 +247,6 @@ export function AppProvider({ children }) {
     const saved = loadJSON(GUEST_KEY, null)
     return saved?.id && saved?.name ? saved : null
   })
-
-  const [notifOpen, setNotifOpen] = useState(false)
-
-  const [hasUnreadNotifs, setHasUnreadNotifs] = useState(
-    () => updates.some((update) => !update.read)
-  )
 
   /* ------------------------------------------------------------------------ */
   /* Current user (seed + persisted profile edits, stable id)                 */
@@ -245,6 +276,30 @@ export function AppProvider({ children }) {
     [user]
   )
 
+  const refreshServerActivities = useCallback(async () => {
+    const selectedState =
+      getSelectedState() ||
+      CITY_STATES[getSelectedCity()] ||
+      CITY_STATES[city] ||
+      ''
+    const query = selectedState ? `?state=${encodeURIComponent(selectedState)}` : ''
+    const { activities: savedActivities } = await apiRequest(`/activities${query}`)
+    if (Array.isArray(savedActivities)) setServerActivities(savedActivities)
+  }, [city])
+
+  useEffect(() => {
+    const refresh = () => refreshServerActivities()
+      .catch((error) => console.error('Failed to load saved events:', error))
+    const onLocationChanged = () => refresh()
+    refresh()
+    const intervalId = window.setInterval(refresh, 60 * 1000)
+    window.addEventListener('spontii:location-changed', onLocationChanged)
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('spontii:location-changed', onLocationChanged)
+    }
+  }, [city, isAuthenticated, user?.id, refreshServerActivities])
+
   /* ------------------------------------------------------------------------ */
   /* Activities                                                               */
   /*                                                                          */
@@ -257,15 +312,21 @@ export function AppProvider({ children }) {
     const resolve = (person) =>
       person?.id === currentUser.id ? currentUser : person
 
-    return [...created, ...seedActivities].map((activity) => ({
+    return [...created, ...databaseActivities, ...seedActivities].map((activity) => ({
       ...activity,
-      host: resolve(activity.host),
+      host: {
+        ...resolve(activity.host),
+        avatar: resolve(activity.host)?.avatar || initialsAvatar(activity.host?.name),
+      },
       going: mergeParticipants(
         activity,
         joinRequests[activity.id] || []
-      ).map(resolve),
+      ).map((person) => ({
+        ...resolve(person),
+        avatar: resolve(person)?.avatar || initialsAvatar(person?.name),
+      })),
     }))
-  }, [created, joinRequests, currentUser])
+  }, [created, databaseActivities, joinRequests, currentUser])
 
   /* ------------------------------------------------------------------------ */
   /* Viewer access (enforced here, at the data source every page reads)       */
@@ -362,6 +423,43 @@ export function AppProvider({ children }) {
     ])
   }
 
+  async function publishActivity(details, files) {
+    const body = new FormData()
+    body.append('details', JSON.stringify(details))
+    for (const file of files) body.append('media', file)
+
+    const { activity, notification } = await apiRequest('/activities', {
+      method: 'POST',
+      body,
+    })
+    setServerActivities((previous) => [
+      activity,
+      ...previous.filter((item) => item.id !== activity.id),
+    ])
+    if (notification) {
+      window.dispatchEvent(new CustomEvent('spontii:notification-created', {
+        detail: notification,
+      }))
+    }
+    window.dispatchEvent(new Event('spontii:points-updated'))
+    return activity
+  }
+
+  async function completeActivity(activityId) {
+    const result = await apiRequest(`/activities/${activityId}/complete`, {
+      method: 'PATCH',
+    })
+    setServerActivities((previous) =>
+      previous.filter((activity) => activity.id !== activityId),
+    )
+    if (result.notificationId) {
+      window.dispatchEvent(new CustomEvent('spontii:notification-removed', {
+        detail: { id: result.notificationId },
+      }))
+    }
+    return result
+  }
+
   /* ------------------------------------------------------------------------ */
   /* Participation                                                            */
   /* ------------------------------------------------------------------------ */
@@ -385,11 +483,30 @@ export function AppProvider({ children }) {
       }
     }
 
-    return participationFor(
-      activity,
-      joinRequests[activityId] || [],
-      isAuthenticated ? userId : guest?.id ?? null
-    )
+    const participantId = isAuthenticated ? userId : guest?.id ?? null
+    if (activity.databaseBacked) {
+      const hosting = isHost(activity, participantId)
+      const spots = Math.max(
+        Number(activity.capacity || 0) - Number(activity.attendeeCount || 0),
+        0,
+      )
+      const status = hosting
+        ? 'hosting'
+        : activity.requestStatus === 'approved'
+          ? 'going'
+          : activity.requestStatus === 'pending'
+            ? 'pending'
+            : activity.requestStatus === 'rejected'
+              ? 'rejected'
+              : 'none'
+      return {
+        status,
+        request: null,
+        spotsLeft: spots,
+        isFull: spots <= 0,
+      }
+    }
+    return participationFor(activity, joinRequests[activityId] || [], participantId)
   }
 
   /* ------------------------------------------------------------------------ */
@@ -440,6 +557,23 @@ export function AppProvider({ children }) {
 
     if (!activity) {
       return { success: false, message: 'Plan not found.' }
+    }
+
+    if (activity.databaseBacked) {
+      if (!isAuthenticated) {
+        return { success: false, needsAccount: true, message: 'Log in to request to join this event.' }
+      }
+      return apiRequest(`/activities/${activityId}/requests`, { method: 'POST' })
+        .then((result) => {
+          setServerActivities((previous) => previous.map((item) =>
+            item.id === activityId ? { ...item, requestStatus: 'pending' } : item,
+          ))
+          refreshServerActivities().catch((error) =>
+            console.error('Failed to refresh events after sending a join request:', error),
+          )
+          return { success: true, created: result.created, request: result.request }
+        })
+        .catch((error) => ({ success: false, message: error.message }))
     }
 
     /* Logged out: public plans only, and only as this device's guest. */
@@ -670,8 +804,23 @@ export function AppProvider({ children }) {
     }))
   }
 
-  function approveRequest(activityId, requestId) {
-    const { error, activity } = validateReview(
+  async function approveRequest(activityId, requestId) {
+    const activity = findActivity(activityId)
+    if (activity?.databaseBacked) {
+      try {
+        await apiRequest(`/activities/${activityId}/requests/${requestId}`, {
+          method: 'PATCH',
+          body: { action: 'approve' },
+        })
+        refreshServerActivities().catch((error) =>
+          console.error('Failed to refresh events after approving a request:', error),
+        )
+        return { success: true }
+      } catch (error) {
+        return { success: false, message: error.message }
+      }
+    }
+    const { error, activity: reviewedActivity } = validateReview(
       activityId,
       requestId
     )
@@ -680,7 +829,7 @@ export function AppProvider({ children }) {
       return { success: false, message: error }
     }
 
-    if (spotsLeft(activity) <= 0) {
+    if (spotsLeft(reviewedActivity) <= 0) {
       return { success: false, message: 'This plan is already full.' }
     }
 
@@ -689,7 +838,22 @@ export function AppProvider({ children }) {
     return { success: true }
   }
 
-  function rejectRequest(activityId, requestId) {
+  async function rejectRequest(activityId, requestId) {
+    const activity = findActivity(activityId)
+    if (activity?.databaseBacked) {
+      try {
+        await apiRequest(`/activities/${activityId}/requests/${requestId}`, {
+          method: 'PATCH',
+          body: { action: 'reject' },
+        })
+        refreshServerActivities().catch((error) =>
+          console.error('Failed to refresh events after declining a request:', error),
+        )
+        return { success: true }
+      } catch (error) {
+        return { success: false, message: error.message }
+      }
+    }
     const { error } = validateReview(activityId, requestId)
 
     if (error) {
@@ -786,7 +950,6 @@ export function AppProvider({ children }) {
 
   function clearUpdates() {
     setUpdates([])
-    setHasUnreadNotifs(false)
   }
 
   /* Read state is kept on each update instead of deleting it. */
@@ -794,30 +957,14 @@ export function AppProvider({ children }) {
     setUpdates((previous) =>
       previous.map((update) => ({ ...update, read: true }))
     )
-    setHasUnreadNotifs(false)
   }
 
   function markUpdateRead(updateId) {
     setUpdates((previous) => {
-      const next = previous.map((update) =>
+      return previous.map((update) =>
         update.id === updateId ? { ...update, read: true } : update
       )
-      setHasUnreadNotifs(next.some((update) => !update.read))
-      return next
     })
-  }
-
-  /* ------------------------------------------------------------------------ */
-  /* Notifications                                                            */
-  /* ------------------------------------------------------------------------ */
-
-  function toggleNotifications() {
-    setNotifOpen((previous) => !previous)
-    setHasUnreadNotifs(false)
-  }
-
-  function closeNotifications() {
-    setNotifOpen(false)
   }
 
   /* ------------------------------------------------------------------------ */
@@ -831,8 +978,12 @@ export function AppProvider({ children }) {
 
     /* Activities */
     activities,
+    databaseActivities,
+    refreshServerActivities,
     created,
     addActivity,
+    publishActivity,
+    completeActivity,
 
     /* Guest (logged-out requests to public plans) */
     guest,
@@ -869,13 +1020,6 @@ export function AppProvider({ children }) {
     markUpdatesRead,
     markUpdateRead,
 
-    /* Notifications */
-    notifOpen,
-    setNotifOpen,
-    toggleNotifications,
-    closeNotifications,
-    hasUnreadNotifs,
-    setHasUnreadNotifs,
   }
 
   return (

@@ -143,12 +143,21 @@ export default function Login() {
             </div>
 
             <div>
-              <label
-                htmlFor="login-password"
-                className="mb-2 block text-sm font-semibold"
-              >
-                Password
-              </label>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label
+                  htmlFor="login-password"
+                  className="block text-sm font-semibold"
+                >
+                  Password
+                </label>
+                <Link
+                  to="/forgot-password"
+                  state={{ ...location.state, email }}
+                  className="text-sm font-semibold text-mint transition hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              </div>
 
               <div className="relative">
                 <input

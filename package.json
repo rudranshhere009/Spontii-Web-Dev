@@ -19,6 +19,7 @@
     "express-rate-limit": "^8.7.1",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
+    "leaflet": "^1.9.4",
     "multer": "^2.4.0",
     "mysql2": "^3.24.6",
     "nodemailer": "^10.1.1",

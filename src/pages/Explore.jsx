@@ -7,6 +7,7 @@ import { categories, vibes } from "../data/mockData";
 import { useApp } from "../context/AppContext";
 
 import AvatarStack from "../components/AvatarStack";
+import EventPlanIdeas from "../components/EventPlanIdeas";
 import { useAuth } from "../context/AuthContext";
 
 import { genderPreferenceTag, isPrivateActivity } from "../lib/activities";
@@ -34,9 +35,10 @@ const WEEK_DAYS = [
 ];
 
 export default function Explore() {
-  const { activities, getVisibleLocation } = useApp();
+  const { databaseActivities, getVisibleLocation } = useApp();
   const { isAuthenticated } = useAuth();
   const [searchParams] = useSearchParams();
+  const cityFilter = searchParams.get("city") ?? "";
 
   /* =========================================================
      ISOLATED FILTER STATE (PUBLIC vs PRIVATE)
@@ -51,6 +53,8 @@ export default function Explore() {
   if (locationKey !== syncedKey) {
     setSyncedKey(locationKey);
     setQuery(searchParams.get("q") ?? "");
+    setPublicDateFilter(searchParams.get("date") ?? "All plans");
+    setPrivateCategoryFilter(searchParams.get("category") ?? "Everything");
   }
 
   // Public Section States (Full Width Tracker + Custom Selector Menu)
@@ -117,9 +121,12 @@ export default function Explore() {
 
   // 1. Compute Public Activities (Ignores Category filter UNLESS navigating from home page)
   const publicActivities = useMemo(() => {
-    return activities
+    return databaseActivities
       .filter((activity) => !isPrivateActivity(activity))
       .filter((activity) => {
+        if (cityFilter && activity.city?.toLocaleLowerCase() !== cityFilter.toLocaleLowerCase()) {
+          return false;
+        }
         // Apply Date Timeline Filter locally
         if (publicDateFilter !== "All plans") {
           const target = publicDateFilter.toLowerCase();
@@ -142,25 +149,29 @@ export default function Explore() {
         if (query.trim()) {
           const q = query.trim().toLowerCase();
           const haystack =
-            `${activity.title ?? ""} ${activity.location ?? ""} ${(activity.tags ?? []).join(" ")}`.toLowerCase();
+            `${activity.title ?? ""} ${activity.location ?? ""} ${activity.city ?? ""} ${(activity.tags ?? []).join(" ")}`.toLowerCase();
           if (!haystack.includes(q)) return false;
         }
 
         return true;
       });
   }, [
-    activities,
+    databaseActivities,
     query,
     publicDateFilter,
     privateCategoryFilter,
     isFromHomeCategory,
+    cityFilter,
   ]);
 
   // 2. Compute Private Activities (Ignores Date filter UNLESS navigating from home page)
   const privateActivities = useMemo(() => {
-    return activities
+    return databaseActivities
       .filter((activity) => isPrivateActivity(activity))
       .filter((activity) => {
+        if (cityFilter && activity.city?.toLocaleLowerCase() !== cityFilter.toLocaleLowerCase()) {
+          return false;
+        }
         // Apply Category Filter locally
         if (
           privateCategoryFilter !== "Everything" &&
@@ -186,18 +197,19 @@ export default function Explore() {
         if (query.trim()) {
           const q = query.trim().toLowerCase();
           const haystack =
-            `${activity.title ?? ""} ${activity.location ?? ""} ${(activity.tags ?? []).join(" ")}`.toLowerCase();
+            `${activity.title ?? ""} ${activity.location ?? ""} ${activity.city ?? ""} ${(activity.tags ?? []).join(" ")}`.toLowerCase();
           if (!haystack.includes(q)) return false;
         }
 
         return true;
       });
   }, [
-    activities,
+    databaseActivities,
     query,
     privateCategoryFilter,
     publicDateFilter,
     isFromHomeDate,
+    cityFilter,
   ]);
 
   // Progressive slice array remains intact for infinite scrolling
@@ -264,7 +276,7 @@ export default function Explore() {
   }
 
   return (
-    <div className="mx-auto max-w-[1600px] space-y-12 px-5 py-8 sm:px-6 lg:space-y-14">
+    <div className="wide-screen-container mx-auto max-w-[1600px] space-y-12 px-5 py-8 sm:px-6 lg:space-y-14">
       {/* =====================================================
           PAGE HEADER CONTAINER
       ===================================================== */}
@@ -627,6 +639,8 @@ export default function Explore() {
 
       {/* Target loading element hook node for infinite scrolling transitions */}
       <div ref={privateLoaderRef} className="h-2" />
+
+      <EventPlanIdeas />
     </div>
   );
 }

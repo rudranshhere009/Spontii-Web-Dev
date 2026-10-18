@@ -128,7 +128,7 @@ export default function Inbox() {
   const participants = active ? participantsFor(active, activities, currentUser.id) : []
 
   return (
-    <div className="mx-auto max-w-[1600px] space-y-8 px-5 py-8 sm:px-6">
+    <div className="wide-screen-container mx-auto max-w-[1600px] space-y-8 px-5 py-8 sm:px-6">
       <div>
         <span className="text-xs font-bold uppercase tracking-[0.12em] text-mint">Stay in the loop</span>
         <h1 className="mt-2 text-3xl font-extrabold tracking-tight sm:text-4xl">Your inbox</h1>

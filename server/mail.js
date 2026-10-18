@@ -26,8 +26,22 @@ function escapeHtml(value) {
   ))
 }
 
-function otpEmailHtml({ name, otp, minutes }) {
+function otpEmailHtml({ name, otp, minutes, purpose }) {
   const firstName = escapeHtml(name.trim().split(/\s+/)[0] || 'there')
+  const isLogin = purpose === 'login'
+  const title = isLogin ? 'Your Spontii login code' : 'Verify your email'
+  const introduction = isLogin
+    ? 'Use this one-time code to log in to your Spontii account.'
+    : "You're one step away: enter the code below to confirm your email and create your account."
+  const greeting = isLogin
+    ? `Hi ${firstName}, here's your login code.`
+    : `Hi ${firstName}, welcome to Spontii 👋`
+  const preview = isLogin
+    ? `Your Spontii login code is ${otp}. It expires in ${minutes} minutes.`
+    : `Your Spontii verification code is ${otp}. It expires in ${minutes} minutes.`
+  const closing = isLogin
+    ? "Didn't request a login code? You can safely ignore this email."
+    : "Didn't try to sign up? You can safely ignore this email, and no account will be created."
   const digits = otp
     .split('')
     .map(
@@ -39,7 +53,7 @@ function otpEmailHtml({ name, otp, minutes }) {
   return `<!doctype html>
 <html>
 <body style="margin:0;padding:0;background:#0b0a14;">
-  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your Spontii verification code is ${otp}. It expires in ${minutes} minutes.</div>
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${preview}</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0b0a14;padding:32px 12px;">
     <tr><td align="center">
       <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;background:#15131f;border:1px solid #2b2840;border-radius:20px;font-family:'Segoe UI',Arial,sans-serif;color:#f4f3fa;">
@@ -49,11 +63,11 @@ function otpEmailHtml({ name, otp, minutes }) {
         </td></tr>
 
         <tr><td style="padding:28px 32px 0;text-align:center;">
-          <div style="font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:#3eebae;">Verify your email</div>
-          <h1 style="margin:12px 0 0;font-size:26px;line-height:1.25;font-weight:800;color:#ffffff;">Hi ${firstName}, welcome to Spontii 👋</h1>
+          <div style="font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:#3eebae;">${title}</div>
+          <h1 style="margin:12px 0 0;font-size:26px;line-height:1.25;font-weight:800;color:#ffffff;">${greeting}</h1>
           <p style="margin:14px 0 0;font-size:15px;line-height:1.6;color:#b7b4cc;">
             Spontii helps you discover spontaneous plans near you and meet people who share your vibe.
-            You're one step away: enter the code below to confirm your email and create your account.
+            ${introduction}
           </p>
         </td></tr>
 
@@ -75,7 +89,7 @@ function otpEmailHtml({ name, otp, minutes }) {
         </td></tr>
 
         <tr><td style="padding:24px 32px 32px;text-align:center;font-size:12px;line-height:1.6;color:#7b7794;">
-          Didn't try to sign up? You can safely ignore this email, and no account will be created.
+          ${closing}
           <br /><br />© Spontii · Made for spontaneous people
         </td></tr>
       </table>
@@ -85,18 +99,24 @@ function otpEmailHtml({ name, otp, minutes }) {
 </html>`
 }
 
-export async function sendOtpEmail({ to, name, otp, minutes }) {
+export async function sendOtpEmail({ to, name, otp, minutes, purpose = 'verification' }) {
   const fromName = process.env.MAIL_FROM_NAME || 'Spontii'
+  const isLogin = purpose === 'login'
+  const subject = isLogin
+    ? `${otp} is your Spontii login code`
+    : `${otp} is your Spontii verification code`
 
   await getTransporter().sendMail({
     from: `"${fromName}" <${process.env.MAIL_USER}>`,
     to,
-    subject: `${otp} is your Spontii verification code`,
+    subject,
     text:
-      `Hi ${name},\n\nWelcome to Spontii! Your verification code is ${otp}.\n` +
+      `Hi ${name},\n\n${isLogin ? 'Your login code' : 'Your verification code'} is ${otp}.\n` +
       `It is valid for ${minutes} minutes.\n\n` +
       `Never share this code with anyone. Spontii will never ask for it.\n` +
-      `If you didn't try to sign up, you can ignore this email.`,
-    html: otpEmailHtml({ name, otp, minutes }),
+      (isLogin
+        ? "If you didn't request a login code, you can ignore this email."
+        : "If you didn't try to sign up, you can ignore this email."),
+    html: otpEmailHtml({ name, otp, minutes, purpose }),
   })
 }

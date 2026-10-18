@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Link } from 'react-router-dom'
 
 import { useApp } from '../context/AppContext'
 import { isHost } from '../lib/activities'
+import { apiRequest } from '../lib/api'
 
 import {
   ArrowRightIcon,
@@ -27,6 +28,35 @@ export default function JoinRequests() {
 
   const [processing, setProcessing] = useState(null)
   const [message, setMessage] = useState(null)
+  const [databaseRequests, setDatabaseRequests] = useState({})
+  const [databaseRequestError, setDatabaseRequestError] = useState('')
+  const [now] = useState(() => Date.now())
+
+  useEffect(() => {
+    let active = true
+    const hostedDatabaseEvents = activities.filter((activity) =>
+      activity.databaseBacked && isHost(activity, currentUser.id),
+    )
+    if (!hostedDatabaseEvents.length) {
+      return undefined
+    }
+    Promise.all(hostedDatabaseEvents.map(async (activity) => {
+      const { requests } = await apiRequest(`/activities/${activity.id}/requests`)
+      return [activity.id, (requests || []).map((request) => ({
+        ...request,
+        databaseBacked: true,
+      }))]
+    }))
+      .then((entries) => {
+        if (!active) return
+        setDatabaseRequests(Object.fromEntries(entries))
+        setDatabaseRequestError('')
+      })
+      .catch((error) => {
+        if (active) setDatabaseRequestError(error.message)
+      })
+    return () => { active = false }
+  }, [activities, currentUser.id])
 
   // ==================================================
   // HOSTED ACTIVITIES WITH REQUESTS
@@ -39,9 +69,54 @@ export default function JoinRequests() {
     .filter((activity) => isHost(activity, currentUser.id))
     .map((activity) => ({
       activity,
-      requests: getJoinRequests(activity.id),
+      requests: activity.databaseBacked
+        ? databaseRequests[activity.id] || []
+        : getJoinRequests(activity.id),
     }))
     .filter((group) => group.requests.length > 0)
+
+  const hostedEvents = [...new Map(
+    activities
+      .filter((activity) => isHost(activity, currentUser.id))
+      .map((activity) => [activity.id, activity]),
+  ).values()]
+  const eventSections = [
+    {
+      title: 'Ongoing events',
+      events: hostedEvents.filter((activity) => {
+        const endTime = Date.parse(activity.endsAt || '')
+        const startTime = Date.parse(activity.startsAt || '')
+        return activity.status !== 'completed' &&
+          Number.isFinite(startTime) &&
+          startTime <= now &&
+          (!Number.isFinite(endTime) || endTime > now)
+      }),
+      badge: 'Live',
+      badgeClass: 'bg-mint/10 text-mint',
+    },
+    {
+      title: 'Upcoming events',
+      events: hostedEvents.filter((activity) => {
+        const startTime = Date.parse(activity.startsAt || '')
+        const endTime = Date.parse(activity.endsAt || '')
+        return activity.status !== 'completed' &&
+          (!Number.isFinite(startTime) || startTime > now) &&
+          (!Number.isFinite(endTime) || endTime > now)
+      }),
+      badge: 'Upcoming',
+      badgeClass: 'bg-blue-500/10 text-blue-300',
+    },
+    {
+      title: 'Previous events',
+      events: hostedEvents.filter((activity) => {
+        const endTime = Date.parse(activity.endsAt || '')
+        return activity.status === 'completed' ||
+          (Number.isFinite(endTime) && endTime <= now)
+      }),
+      badge: 'Completed',
+      badgeClass: 'bg-surface text-muted',
+    },
+  ].filter((section) => section.events.length > 0)
 
   // ==================================================
   // TOTAL PENDING
@@ -81,19 +156,23 @@ export default function JoinRequests() {
   // APPROVE
   // ==================================================
 
-  function handleApprove(
+  async function handleApprove(
     activityId,
     requestId
   ) {
     setProcessing(requestId)
     setMessage(null)
 
-    const result = approveRequest(
+    const result = await approveRequest(
       activityId,
       requestId
     )
 
     if (result.success) {
+      setDatabaseRequests((previous) => ({
+        ...previous,
+        [activityId]: (previous[activityId] || []).filter((request) => request.id !== requestId),
+      }))
       setMessage({
         type: 'success',
         text: 'Applicant approved successfully.',
@@ -114,19 +193,23 @@ export default function JoinRequests() {
   // REJECT
   // ==================================================
 
-  function handleReject(
+  async function handleReject(
     activityId,
     requestId
   ) {
     setProcessing(requestId)
     setMessage(null)
 
-    const result = rejectRequest(
+    const result = await rejectRequest(
       activityId,
       requestId
     )
 
     if (result.success) {
+      setDatabaseRequests((previous) => ({
+        ...previous,
+        [activityId]: (previous[activityId] || []).filter((request) => request.id !== requestId),
+      }))
       setMessage({
         type: 'rejected',
         text: 'Request declined.',
@@ -156,24 +239,25 @@ export default function JoinRequests() {
             HEADER
         ================================================== */}
 
-        <section className="border-b border-border pb-7">
+        <section className="relative overflow-hidden rounded-3xl border border-border bg-surface-2 px-5 py-6 shadow-[0_18px_55px_rgba(0,0,0,0.16)] sm:px-7 sm:py-8">
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-mint/30 via-mint to-mint/20" />
+          <div aria-hidden="true" className="pointer-events-none absolute -right-14 -top-24 h-56 w-56 rounded-full bg-mint/[0.07] blur-3xl" />
 
-          <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
+          <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
 
             <div>
 
-              <p className="text-xs font-bold uppercase tracking-[0.12em] text-mint">
-                Host
+              <p className="inline-flex items-center gap-2 rounded-full border border-mint/20 bg-bg/60 px-3 py-1 text-[10px] font-extrabold uppercase tracking-[0.16em] text-mint">
+                <UsersIcon className="h-3.5 w-3.5" />
+                Host dashboard
               </p>
 
-              <h1 className="mt-2 text-3xl font-extrabold tracking-tight sm:text-4xl lg:text-5xl">
+              <h1 className="mt-3 text-3xl font-extrabold tracking-tight sm:text-4xl lg:text-[2.75rem]">
                 Join Requests
               </h1>
 
-              <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted sm:text-base">
-                Review people who want to join your plans.
-                Check their verification and trust signals
-                before approving them.
+              <p className="mt-2 text-xs text-muted sm:whitespace-nowrap sm:text-sm">
+                Review trust signals before approving applicants.
               </p>
 
             </div>
@@ -183,26 +267,26 @@ export default function JoinRequests() {
 
             <div className="flex w-fit shrink-0 gap-3">
 
-              <div className="min-w-[110px] rounded-xl border border-border bg-surface-2 px-5 py-4">
+              <div className="min-w-[116px] rounded-2xl border border-mint/20 bg-bg/55 px-5 py-4 shadow-sm">
 
                 <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-muted">
                   Pending
                 </p>
 
-                <p className="mt-1 text-3xl font-extrabold text-mint">
+                <p className="mt-1 text-3xl font-extrabold leading-none text-mint">
                   {totalPending}
                 </p>
 
               </div>
 
               {totalReviewed > 0 && (
-                <div className="hidden min-w-[110px] rounded-xl border border-border bg-surface-2 px-5 py-4 sm:block">
+                <div className="hidden min-w-[116px] rounded-2xl border border-border bg-bg/55 px-5 py-4 shadow-sm sm:block">
 
                   <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-muted">
                     Reviewed
                   </p>
 
-                  <p className="mt-1 text-3xl font-extrabold">
+                  <p className="mt-1 text-3xl font-extrabold leading-none">
                     {totalReviewed}
                   </p>
 
@@ -210,6 +294,70 @@ export default function JoinRequests() {
               )}
 
             </div>
+
+            <section aria-labelledby="your-events-title" className="mt-8 space-y-5">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-extrabold uppercase tracking-[0.15em] text-mint">Your plans</p>
+                  <h2 id="your-events-title" className="mt-1 text-xl font-extrabold text-text sm:text-2xl">Your events</h2>
+                </div>
+                <Link to="/create" className="inline-flex items-center gap-1.5 text-xs font-bold text-mint transition hover:text-white">
+                  Create an event
+                  <ArrowRightIcon className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+
+              {eventSections.length ? (
+                <div className="space-y-5">
+                  {eventSections.map((section) => (
+                    <div key={section.title}>
+                      <div className="mb-3 flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-text">{section.title}</h3>
+                        <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-bold text-muted">
+                          {section.events.length}
+                        </span>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {section.events.map((activity) => (
+                          <Link
+                            key={activity.id}
+                            to={`/activities/${activity.id}`}
+                            className="group overflow-hidden rounded-2xl border border-border bg-surface-2 transition hover:-translate-y-0.5 hover:border-mint/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint"
+                          >
+                            {activity.image && (
+                              <img src={activity.image} alt="" loading="lazy" className="h-32 w-full object-cover" />
+                            )}
+                            <div className="p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <h4 className="min-w-0 text-sm font-extrabold text-text transition group-hover:text-mint">{activity.title}</h4>
+                                <span className={`shrink-0 rounded-full px-2 py-1 text-[9px] font-extrabold uppercase tracking-wide ${section.badgeClass}`}>
+                                  {section.badge}
+                                </span>
+                              </div>
+                              <p className="mt-2 flex items-center gap-1.5 text-xs text-muted">
+                                <ClockIcon className="h-3.5 w-3.5 shrink-0" />
+                                <span className="truncate">{activity.date}{activity.time ? ` · ${activity.time}` : ''}</span>
+                              </p>
+                              {activity.location && (
+                                <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted">
+                                  <MapPinIcon className="h-3.5 w-3.5 shrink-0" />
+                                  <span className="truncate">{activity.location}</span>
+                                </p>
+                              )}
+                            </div>
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-border bg-surface-2 px-5 py-8 text-center">
+                  <p className="text-sm font-bold text-text">No ongoing or previous events</p>
+                  <p className="mt-1 text-xs text-muted">Events you host will appear here.</p>
+                </div>
+              )}
+            </section>
 
           </div>
 
@@ -219,6 +367,12 @@ export default function JoinRequests() {
         {/* ==================================================
             ACTION MESSAGE
         ================================================== */}
+
+        {databaseRequestError && (
+          <p role="alert" className="mt-5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
+            Could not load your event requests: {databaseRequestError}
+          </p>
+        )}
 
         {message && (
 
@@ -254,32 +408,30 @@ export default function JoinRequests() {
         ================================================== */}
 
         {requestGroups.length === 0 && (
-
-          <div className="mt-8 rounded-2xl border border-dashed border-border bg-surface-2 px-6 py-16 text-center">
-
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-surface text-muted">
-              <UsersIcon className="h-5 w-5" />
+          <section className="relative mt-6 overflow-hidden rounded-3xl border border-border bg-surface-2 p-5 shadow-[0_16px_45px_rgba(0,0,0,0.12)] sm:p-7" aria-labelledby="empty-requests-title">
+            <div aria-hidden="true" className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-mint/[0.07] blur-3xl" />
+            <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-center gap-4 sm:gap-5">
+                <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-mint/20 bg-mint/10 text-mint">
+                  <UsersIcon className="h-6 w-6" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-extrabold uppercase tracking-[0.15em] text-mint">All clear</p>
+                  <h2 id="empty-requests-title" className="mt-1 text-lg font-extrabold text-text sm:text-xl">No join requests yet</h2>
+                  <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted sm:text-sm">
+                    New requests from people interested in your plans will show up here for review.
+                  </p>
+                </div>
+              </div>
+              <Link
+                to="/create"
+                className="inline-flex h-10 shrink-0 items-center justify-center gap-2 self-start rounded-xl bg-emerald-800 px-4 text-sm font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-emerald-700 sm:self-auto"
+              >
+                Create a plan
+                <ArrowRightIcon className="h-4 w-4" />
+              </Link>
             </div>
-
-            <h2 className="mt-5 text-lg font-bold">
-              Nothing here yet
-            </h2>
-
-            <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-              When someone requests to join one of
-              your plans, their request will appear here.
-            </p>
-
-            <Link
-              to="/create"
-              className="mt-6 inline-flex items-center gap-2 rounded-xl bg-mint px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-mint/90"
-            >
-              Create a plan
-              <ArrowRightIcon className="h-4 w-4" />
-            </Link>
-
-          </div>
-
+          </section>
         )}
 
 
@@ -308,14 +460,14 @@ export default function JoinRequests() {
 
                 <section
                   key={activity.id}
-                  className="overflow-hidden rounded-2xl border border-border bg-surface-2"
+                  className="overflow-hidden rounded-3xl border border-border bg-surface-2 shadow-[0_18px_55px_rgba(0,0,0,0.14)]"
                 >
 
                   {/* ==================================================
                       PLAN HEADER
                   ================================================== */}
 
-                  <div className="border-b border-border p-5 sm:p-6">
+                  <div className="border-b border-border bg-gradient-to-r from-surface to-surface-2 p-5 sm:p-6">
 
                     <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
 
@@ -539,7 +691,7 @@ function ApplicantCard({
 
   return (
 
-    <article className="rounded-xl border border-border bg-surface p-5 sm:p-6">
+    <article className="overflow-hidden rounded-2xl border border-border bg-surface p-4 shadow-sm transition-colors hover:border-mint/25 sm:p-5">
 
       {/* ==================================================
           APPLICANT HEADER
@@ -556,7 +708,9 @@ function ApplicantCard({
         <div className="min-w-0 flex-1">
 
           <Link
-            to={`/people/request/${request.id}`}
+            to={request.databaseBacked
+              ? `/people/${request.applicant.id}`
+              : `/people/request/${request.id}`}
             className="block transition-opacity hover:opacity-80"
           >
 

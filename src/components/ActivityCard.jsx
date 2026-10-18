@@ -26,7 +26,12 @@ const STATUS_ICON = {
   none: ArrowRightIcon,
 }
 
-export default function ActivityCard({ activity, featured = false }) {
+export default function ActivityCard({
+  activity,
+  featured = false,
+  actionLabel,
+  actionTo,
+}) {
   const { getParticipation } = useApp()
 
   /*
@@ -40,7 +45,7 @@ export default function ActivityCard({ activity, featured = false }) {
   const { status, spotsLeft } = participation
   const going = status === 'going' || status === 'hosting'
   const isFull = spotsLeft <= 0 && !going && status !== 'pending'
-  const label = isFull ? 'Plan is full' : STATUS_LABEL[status]
+  const label = actionLabel || (isFull ? 'Plan is full' : STATUS_LABEL[status])
   const LabelIcon = isFull ? null : STATUS_ICON[status]
 
   return (
@@ -54,12 +59,16 @@ export default function ActivityCard({ activity, featured = false }) {
         />
         <div className="absolute inset-x-0 top-0 flex items-center p-3">
           <span className="rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-mint backdrop-blur">
-            {activity.badge}
+            {activity.isHost ? 'YOUR EVENT' : activity.badge}
           </span>
         </div>
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3 pt-10">
           <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-text">
-            <img src={activity.host.avatar} alt="" className="h-5 w-5 shrink-0 rounded-full object-cover" />
+            {activity.host.avatar ? (
+              <img src={activity.host.avatar} alt="" className="h-5 w-5 shrink-0 rounded-full object-cover" />
+            ) : (
+              <span aria-label="No profile photo" className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-surface-3 text-[11px]">👤</span>
+            )}
             <span className="truncate">Hosted by {activity.host.name}</span>
             {activity.host.verified && (
               <span className="flex shrink-0 items-center gap-1 text-mint">
@@ -73,7 +82,11 @@ export default function ActivityCard({ activity, featured = false }) {
 
       <div className="p-4">
         <Link to={`/activities/${activity.id}`}>
-          <h3 className="text-lg font-extrabold leading-snug hover:text-mint">{activity.title}</h3>
+          <h3 className="flex flex-wrap items-center gap-x-1.5 gap-y-1 leading-snug">
+            <span className="rounded bg-rose-600 px-2 py-1 text-[9px] font-extrabold uppercase tracking-wide text-white">Event Name</span>
+            <span className="text-xs font-semibold text-text">-</span>
+            <span className="ml-0.5 text-base font-extrabold text-text hover:text-mint">{activity.title}</span>
+          </h3>
         </Link>
 
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
@@ -107,7 +120,7 @@ export default function ActivityCard({ activity, featured = false }) {
           <div className="flex min-w-0 flex-col gap-1">
             <div className="flex items-center gap-2">
               <AvatarStack people={activity.going} max={3} size={26} />
-              <span className="whitespace-nowrap text-sm font-semibold">{activity.going.length} going</span>
+              <span className="whitespace-nowrap text-sm font-semibold">{activity.attendeeCount ?? activity.going.length} going</span>
             </div>
             {activity.vibeMatches > 0 && (
               <span className="truncate text-xs text-muted">
@@ -121,15 +134,19 @@ export default function ActivityCard({ activity, featured = false }) {
               <span className="text-xs font-semibold text-warning">{spotsLeft} spots left</span>
             )}
             <Link
-              to={`/activities/${activity.id}`}
+              to={actionTo || `/activities/${activity.id}`}
               className={`flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-4 sm:h-9 text-sm font-bold transition-colors ${
-                going
+                actionLabel
+                  ? 'bg-mint text-bg hover:bg-mint/90'
+                  : going
                   ? 'bg-mint text-bg'
                   : 'bg-text/10 text-text hover:bg-mint hover:text-bg'
               }`}
             >
               {label}
-              {LabelIcon && <LabelIcon className="h-3.5 w-3.5" />}
+              {actionLabel
+                ? <ArrowRightIcon className="h-3.5 w-3.5" />
+                : LabelIcon && <LabelIcon className="h-3.5 w-3.5" />}
             </Link>
           </div>
         </div>
