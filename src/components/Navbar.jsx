@@ -11,6 +11,7 @@ import {
 } from "react-router-dom";
 import { useApp } from "../context/AppContext";
 import { useAuth } from "../context/AuthContext";
+import { useChat } from "../context/ChatContext";
 import logo from "../assets/logo.png";
 import ThemeToggle from "./ThemeToggle";
 import Notifications from "./Notifications";
@@ -74,11 +75,24 @@ function TabTooltip({ children, left = false }) {
 }
 
 /* One tab of the mobile bottom bar: icon over label, mint when active. */
-function MobileNavItem({ to, icon: Icon, label, primary = false }) {
+function UnreadBadge({ count }) {
+  if (!count) return null;
+  return (
+    <span
+      aria-hidden
+      className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-mint px-1 text-[10px] font-extrabold leading-none text-bg"
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+function MobileNavItem({ to, icon: Icon, label, primary = false, badge = 0 }) {
   return (
     <NavLink
       to={to}
       end={to === "/"}
+      aria-label={badge ? `${label}, ${badge} unread` : undefined}
       className={({ isActive }) =>
         `group relative flex min-w-0 flex-col items-center justify-center gap-1 text-[11px] leading-none transition-colors focus-visible:outline-none ${
           isActive
@@ -99,7 +113,7 @@ function MobileNavItem({ to, icon: Icon, label, primary = false }) {
           )}
           <span
             aria-hidden
-            className={`flex items-center justify-center rounded-full transition-colors group-focus-visible:ring-2 group-focus-visible:ring-mint/60 ${
+            className={`relative flex items-center justify-center rounded-full transition-colors group-focus-visible:ring-2 group-focus-visible:ring-mint/60 ${
               primary ? "h-9 w-9 bg-mint text-bg" : "h-9 w-11"
             }`}
           >
@@ -657,6 +671,7 @@ export default function Navbar() {
     currentUser,
   } = useApp();
   const { isAuthenticated } = useAuth();
+  const { unreadTotal } = useChat();
   const { pathname } = useLocation();
 
   return (
@@ -702,9 +717,10 @@ export default function Navbar() {
           <NavLink
             to="/inbox"
             className={({ isActive }) => `hidden md:flex ${tabClass({ isActive })}`}
-            aria-label="Inbox"
+            aria-label={unreadTotal ? `Inbox, ${unreadTotal} unread` : "Inbox"}
           >
             <ChatIcon className="h-4 w-4" />
+            <UnreadBadge count={unreadTotal} />
             <TabTooltip>Inbox</TabTooltip>
           </NavLink>
 
@@ -755,7 +771,7 @@ export default function Navbar() {
         <MobileNavItem to="/explore" icon={CompassIcon} label="Explore" />
         <MobileNavItem to="/create" icon={PlusIcon} label="Create" primary />
         <MobileNavItem to="/people" icon={UsersIcon} label="People" />
-        <MobileNavItem to="/inbox" icon={ChatIcon} label="Inbox" />
+        <MobileNavItem to="/inbox" icon={ChatIcon} label="Inbox" badge={unreadTotal} />
         <MobileNavItem to="/profile" icon={UserIcon} label="Me" />
       </div>
     </nav>

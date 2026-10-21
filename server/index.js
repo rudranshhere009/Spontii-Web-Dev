@@ -9,7 +9,19 @@ import helmet from 'helmet'
 import jwt from 'jsonwebtoken'
 import multer from 'multer'
 import mysql from 'mysql2/promise'
+import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
+import {
+  attachChatSocket,
+  blockStatus,
+  cleanupExpiredMessages,
+  createChatTables,
+  isBlockedBetween,
+  notifyDirectAccess,
+  notifyEventClosed,
+  notifyInBackground,
+  registerChatRoutes,
+} from './chat.js'
 import { sendOtpEmail } from './mail.js'
 
 dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)) })
@@ -59,17 +71,38 @@ const activityUpload = multer({
   },
 })
 const profileFields = ['photo', 'city', 'tagline', 'bio', 'tags']
+const frontendOrigins = (process.env.FRONTEND_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+
+if (isProduction && !frontendOrigins.length) {
+  console.warn('FRONTEND_ORIGIN is not set; browser requests that change data will be rejected.')
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) return false
+  if (frontendOrigins.includes(origin)) return true
+  return !isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+}
 
 app.use(helmet())
 app.use(express.json({ limit: '10kb' }))
 app.use(cookieParser())
 
-if (process.env.FRONTEND_ORIGIN) {
+if (frontendOrigins.length) {
   app.use(cors({
-    origin: process.env.FRONTEND_ORIGIN,
+    origin: frontendOrigins,
     credentials: true,
   }))
 }
+
+app.use((request, response, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(request.method)) return next()
+  const origin = request.get('origin')
+  if (isAllowedOrigin(origin) || (!origin && !isProduction)) return next()
+  return response.status(403).json({ message: 'This request origin is not allowed.' })
+})
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -190,33 +223,35 @@ function validateSignup(body) {
   return { value: { name, email, phone, password } }
 }
 
+function verifySessionToken(token) {
+  if (!token) return null
+  try {
+    const payload = jwt.verify(token, jwtSecret)
+    const clientId = Number(payload.sub)
+    if (!Number.isSafeInteger(clientId) || clientId <= 0) return null
+    return { clientId, expiresAt: payload.exp * 1000 }
+  } catch {
+    return null
+  }
+}
+
 function requireSession(request, response, next) {
   const token = request.cookies[cookieName]
-
   if (!token) {
     return response.status(401).json({ message: 'Please log in.' })
   }
 
-  try {
-    const payload = jwt.verify(token, jwtSecret)
-    request.clientId = Number(payload.sub)
-    return next()
-  } catch {
+  const session = verifySessionToken(token)
+  if (!session) {
     response.clearCookie(cookieName, cookieOptions)
     return response.status(401).json({ message: 'Your session has expired. Please log in again.' })
   }
+  request.clientId = session.clientId
+  return next()
 }
 
 function optionalSession(request, _response, next) {
-  const token = request.cookies[cookieName]
-  if (token) {
-    try {
-      const payload = jwt.verify(token, jwtSecret)
-      request.clientId = Number(payload.sub)
-    } catch {
-      request.clientId = null
-    }
-  }
+  request.clientId = verifySessionToken(request.cookies[cookieName])?.clientId ?? null
   next()
 }
 
@@ -336,7 +371,7 @@ async function expireActivities() {
      SET n.dismissed_at = COALESCE(n.dismissed_at, NOW())
      WHERE n.type = 'hosted_event' AND a.ends_at <= UTC_TIMESTAMP()`,
   )
-  await pool.execute('DELETE FROM activity_chat_messages WHERE created_at < UTC_TIMESTAMP() - INTERVAL 24 HOUR')
+  await cleanupExpiredMessages(pool)
   await pool.execute('DELETE FROM activities WHERE ends_at <= UTC_TIMESTAMP()')
 }
 
@@ -663,9 +698,21 @@ app.get('/api/people/search', requireSession, async (request, response, next) =>
          ON f.client_low_id = LEAST(c.client_id, ?)
         AND f.client_high_id = GREATEST(c.client_id, ?)
        WHERE c.client_id <> ? AND c.full_name LIKE ? ESCAPE '\\\\'
+         AND NOT EXISTS (
+           SELECT 1 FROM user_blocks b
+           WHERE (b.blocker_client_id = ? AND b.blocked_client_id = c.client_id)
+              OR (b.blocker_client_id = c.client_id AND b.blocked_client_id = ?)
+         )
        ORDER BY c.full_name ASC
        LIMIT 12`,
-      [request.clientId, request.clientId, request.clientId, `%${escapedQuery}%`],
+      [
+        request.clientId,
+        request.clientId,
+        request.clientId,
+        `%${escapedQuery}%`,
+        request.clientId,
+        request.clientId,
+      ],
     )
     response.json({
       people: rows.map((row) => ({
@@ -758,6 +805,10 @@ app.delete('/api/friends/:personId', requireSession, async (request, response, n
     if (result.affectedRows !== 1) {
       return response.status(404).json({ message: 'Accepted friendship not found.' })
     }
+    notifyInBackground(
+      notifyDirectAccess(pool, request.clientId, Number(request.params.personId)),
+      'update direct messages after unfriending',
+    )
     response.json({ status: 'removed' })
   } catch (error) {
     next(error)
@@ -780,6 +831,8 @@ app.get('/api/people/:id', requireSession, async (request, response, next) => {
       [personId],
     )
     if (!rows[0]) return response.status(404).json({ message: 'Profile not found.' })
+    const blocks = await blockStatus(pool, request.clientId, personId)
+    if (blocks.byThem) return response.status(404).json({ message: 'Profile not found.' })
     const [relations] = await pool.execute(
       `SELECT friendship_id, requester_client_id, status FROM friendships
        WHERE client_low_id = LEAST(?, ?) AND client_high_id = GREATEST(?, ?)
@@ -787,6 +840,9 @@ app.get('/api/people/:id', requireSession, async (request, response, next) => {
       [request.clientId, personId, request.clientId, personId],
     )
     const relation = relations[0]
+    const rights = blocks.byMe
+      ? { allowed: false }
+      : await messagingRights(pool, request.clientId, personId)
     response.json({
       person: {
         ...publicPerson(rows[0]),
@@ -796,6 +852,8 @@ app.get('/api/people/:id', requireSession, async (request, response, next) => {
             ? Number(relation.requester_client_id) === request.clientId ? 'outgoing' : 'incoming'
             : 'none',
         requestId: relation?.friendship_id ? String(relation.friendship_id) : null,
+        blocked: blocks.byMe,
+        canMessage: rights.allowed,
       },
     })
   } catch (error) {
@@ -842,15 +900,23 @@ app.post('/api/friends/requests/:personId', requireSession, async (request, resp
       'SELECT client_id FROM clients WHERE client_id IN (?, ?)',
       [request.clientId, personId],
     )
-    if (peopleRows.length !== 2) {
+    if (peopleRows.length !== 2 || await isBlockedBetween(connection, request.clientId, personId)) {
       await connection.rollback()
       return response.status(404).json({ message: 'Person not found.' })
     }
     const [existingRows] = await connection.execute(
-      `SELECT friendship_id, requester_client_id, status FROM friendships
+      `SELECT friendship_id, requester_client_id, status,
+              updated_at > NOW() - INTERVAL 7 DAY AS reviewed_recently
+       FROM friendships
        WHERE client_low_id = ? AND client_high_id = ? FOR UPDATE`,
       [lowId, highId],
     )
+    if (existingRows[0]?.status === 'rejected' &&
+        Number(existingRows[0].requester_client_id) === request.clientId &&
+        existingRows[0].reviewed_recently) {
+      await connection.rollback()
+      return response.status(429).json({ message: 'You can send this person another request later.' })
+    }
     if (existingRows[0]?.status === 'accepted') {
       await connection.rollback()
       return response.status(409).json({ message: 'You are already friends.' })
@@ -982,6 +1048,10 @@ app.patch('/api/friends/requests/:id/:action', requireSession, async (request, r
           `friend-accepted:${id}`,
         ],
       )
+      notifyInBackground(
+        notifyDirectAccess(pool, request.clientId, Number(requestRows[0].requester_client_id)),
+        'open direct messages for new friends',
+      )
     }
     response.json({ status })
   } catch (error) {
@@ -1053,6 +1123,10 @@ app.post('/api/activities/:id/requests', requireSession, async (request, respons
     if (prior[0]?.status === 'approved') {
       await connection.rollback()
       return response.status(409).json({ message: "You're already approved for this event." })
+    }
+    if (prior[0]?.status === 'removed') {
+      await connection.rollback()
+      return response.status(403).json({ message: 'The host removed you from this event.' })
     }
     if (prior[0]) {
       await connection.execute(
@@ -1247,71 +1321,7 @@ app.get('/api/activities/:id/attendees', requireSession, async (request, respons
   }
 })
 
-async function canUseActivityChat(activityId, clientId) {
-  const [rows] = await pool.execute(
-    `SELECT a.activity_id, a.host_client_id, a.ends_at, a.status,
-       a.ends_at <= UTC_TIMESTAMP() AS event_ended,
-       EXISTS(SELECT 1 FROM activity_join_requests jr
-              WHERE jr.activity_id = a.activity_id
-                AND jr.applicant_client_id = ? AND jr.status = 'approved') AS is_attendee
-     FROM activities a WHERE a.public_id = ? LIMIT 1`,
-    [clientId, activityId],
-  )
-  const activity = rows[0]
-  if (!activity || activity.status !== 'active' || activity.event_ended) {
-    return { activity: null, allowed: false }
-  }
-  return {
-    activity,
-    allowed: Number(activity.host_client_id) === clientId || Boolean(activity.is_attendee),
-  }
-}
-
-app.get('/api/activities/:id/chat', requireSession, async (request, response, next) => {
-  try {
-    await pool.execute('DELETE FROM activity_chat_messages WHERE created_at < UTC_TIMESTAMP() - INTERVAL 24 HOUR')
-    const access = await canUseActivityChat(request.params.id, request.clientId)
-    if (!access.activity) return response.status(404).json({ message: 'Event is no longer active.' })
-    if (!access.allowed) return response.status(403).json({ message: 'Live chat is available only to the host and approved attendees.' })
-    const [rows] = await pool.execute(
-      `SELECT m.message_id, m.message_text, m.created_at, c.client_id, c.full_name
-       FROM activity_chat_messages m
-       JOIN clients c ON c.client_id = m.sender_client_id
-       WHERE m.activity_id = ? AND m.created_at >= UTC_TIMESTAMP() - INTERVAL 24 HOUR
-       ORDER BY m.created_at ASC LIMIT 200`,
-      [access.activity.activity_id],
-    )
-    response.set('Cache-Control', 'private, no-store')
-    response.json({ messages: rows.map((row) => ({
-      id: String(row.message_id),
-      text: row.message_text,
-      createdAt: row.created_at,
-      sender: { id: Number(row.client_id), name: row.full_name },
-    })) })
-  } catch (error) {
-    next(error)
-  }
-})
-
-app.post('/api/activities/:id/chat', requireSession, async (request, response, next) => {
-  const text = typeof request.body?.text === 'string' ? request.body.text.trim() : ''
-  if (!text || text.length > 2000) return response.status(400).json({ message: 'Message must be between 1 and 2000 characters.' })
-  try {
-    const access = await canUseActivityChat(request.params.id, request.clientId)
-    if (!access.activity) return response.status(404).json({ message: 'Event is no longer active.' })
-    if (!access.allowed) return response.status(403).json({ message: 'Live chat is available only to the host and approved attendees.' })
-    const [result] = await pool.execute(
-      `INSERT INTO activity_chat_messages (activity_id, sender_client_id, message_text)
-       VALUES (?, ?, ?)`,
-      [access.activity.activity_id, request.clientId, text],
-    )
-    response.status(201).json({
-      message: { id: String(result.insertId), text, sender: { id: request.clientId }, createdAt: new Date().toISOString() },
-    })
-  } catch (error) {
-    next(error)
-  }
-})
+registerChatRoutes(app, { pool, requireSession })
 
 app.patch('/api/activities/:id/complete', requireSession, async (request, response, next) => {
   let connection
@@ -1355,6 +1365,10 @@ app.patch('/api/activities/:id/complete', requireSession, async (request, respon
       [request.clientId, `hosted-event:${request.params.id}`],
     )
     await connection.commit()
+    notifyInBackground(
+      notifyEventClosed(pool, activity.activity_id, request.params.id, request.clientId),
+      'close chats for a completed event',
+    )
     response.json({
       message: 'Event completed.',
       notificationId: notifications[0] ? String(notifications[0].notification_id) : null,
@@ -2492,6 +2506,16 @@ async function start() {
         REFERENCES clients (client_id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `)
+  const [joinStatusColumn] = await pool.query(
+    `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'activity_join_requests'
+       AND COLUMN_NAME = 'status' LIMIT 1`,
+  )
+  if (joinStatusColumn[0] && !joinStatusColumn[0].COLUMN_TYPE.includes("'removed'")) {
+    await pool.query(
+      "ALTER TABLE activity_join_requests MODIFY COLUMN status ENUM('pending', 'approved', 'rejected', 'removed') NOT NULL DEFAULT 'pending'",
+    )
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS activity_chat_messages (
       message_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -2508,6 +2532,7 @@ async function start() {
         REFERENCES clients (client_id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `)
+  await createChatTables(pool)
   await expireActivities()
   const activityCleanupTimer = setInterval(() => {
     expireActivities()
@@ -2569,7 +2594,14 @@ async function start() {
     )
   }
 
-  app.listen(port, () => {
+  const server = createServer(app)
+  attachChatSocket(server, {
+    cookieName,
+    frontendOrigins,
+    isAllowedOrigin,
+    verifySessionToken,
+  })
+  server.listen(port, () => {
     console.log(`Spontii API listening on http://localhost:${port}`)
   })
 }

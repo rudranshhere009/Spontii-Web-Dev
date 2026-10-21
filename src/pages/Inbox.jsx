@@ -1,11 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
-import { people, updates as seedUpdates } from '../data/mockData'
-import AvatarStack from '../components/AvatarStack'
+import { useAuth } from '../context/AuthContext'
+import { updates as seedUpdates } from '../data/mockData'
+import ChatThread from '../components/ChatThread'
+import { useChatEvent, useChatThread } from '../hooks/useChatThread'
+import { apiRequest } from '../lib/api'
+import { firstName, formatThreadTime, threadKey } from '../lib/chat'
+import avatarPlaceholder from '../assets/avatar-placeholder.svg'
 import {
   ArrowLeftIcon,
-  ArrowRightIcon,
   BellIcon,
   ChatIcon,
   CheckIcon,
@@ -18,8 +22,6 @@ import {
 } from '../components/NavIcons'
 
 const ICONS = { check: CheckIcon, chat: ChatIcon }
-
-const PEOPLE_BY_ID = Object.fromEntries(people.map((p) => [p.id, p]))
 
 /* Updates saved before links existed still find their action. */
 const SEED_LINKS = Object.fromEntries(
@@ -39,8 +41,8 @@ const TRUST_POINTS = [
     id: 'report',
     icon: FlagIcon,
     title: 'Keep it about the plan',
-    text: 'Activity chats are for coordinating the meetup itself.',
-    more: "If something feels off, you don't have to go. Avoid sharing personal details like your address or phone number in chat.",
+    text: 'You can message friends, and your host or guests while an event is on.',
+    more: "Everyone else talks in the event's live chat. Report a message or block someone if anything feels off, and avoid sharing your address or phone number.",
   },
   {
     id: 'privacy',
@@ -51,81 +53,240 @@ const TRUST_POINTS = [
   },
 ]
 
-/* Participant names for the conversation header. */
-function participantsFor(chat, activities, meId) {
-  const activity = activities.find((a) => a.id === chat.activityId)
-  const list = [chat.person, activity?.host, ...(activity?.going ?? [])]
-  const seen = new Set([meId])
-  return list.filter((p) => p && !seen.has(p.id) && seen.add(p.id))
+function previewText(lastMessage, meId, kind) {
+  if (!lastMessage) return 'No messages yet'
+  if (lastMessage.senderId === meId) return `You: ${lastMessage.text}`
+  return kind === 'event' ? `${firstName(lastMessage.senderName)}: ${lastMessage.text}` : lastMessage.text
+}
+
+function ThreadRow({ id, selected, onOpen, image, round, title, preview, time, unread }) {
+  return (
+    <li>
+      <button
+        id={id}
+        type="button"
+        onClick={onOpen}
+        aria-current={selected ? 'true' : undefined}
+        className={`group flex w-full items-center gap-3.5 rounded-2xl border p-3 text-left transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 sm:gap-4 sm:p-3.5 ${
+          selected
+            ? 'border-mint/50 bg-mint/[0.07]'
+            : 'border-border bg-surface-2 hover:border-text/20 hover:bg-surface-3/60'
+        }`}
+      >
+        <img src={image} alt="" className={`h-14 w-14 shrink-0 object-cover ${round ? 'rounded-full' : 'rounded-xl'}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className={`truncate text-text ${unread ? 'font-extrabold' : 'font-bold'}`}>{title}</p>
+            <span className={`shrink-0 text-xs ${unread ? 'font-semibold text-mint' : 'text-muted'}`}>{time}</span>
+          </div>
+          <div className="mt-1 flex items-center gap-3">
+            <p className={`min-w-0 flex-1 truncate text-sm ${unread ? 'text-text' : 'text-muted'}`}>{preview}</p>
+            {unread > 0 && (
+              <span className="grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-mint px-1.5 text-[11px] font-extrabold text-bg">
+                {unread > 99 ? '99+' : unread}
+                <span className="sr-only"> unread</span>
+              </span>
+            )}
+          </div>
+        </div>
+        <ChevronRightIcon
+          className={`h-4 w-4 shrink-0 transition-transform duration-200 group-hover:translate-x-0.5 ${selected ? 'text-mint' : 'text-muted'}`}
+        />
+      </button>
+    </li>
+  )
+}
+
+/* One open conversation: header (title, block, close) around the shared ChatThread. */
+function ThreadPanel({ kind, threadId, summary, meId, onClose, onChanged, panelRef }) {
+  const thread = useChatThread(kind, threadId)
+  const [confirmBlock, setConfirmBlock] = useState(false)
+  const [blocking, setBlocking] = useState(false)
+  const [blockError, setBlockError] = useState('')
+  const isEvent = kind === 'event'
+  const person = thread.person || summary?.person
+  const title = isEvent ? thread.title || summary?.title || 'Event chat' : person?.name || 'Conversation'
+  const image = isEvent ? summary?.image : person?.avatar || avatarPlaceholder
+  const canBlock = !isEvent && person && thread.status === 'ready' && thread.reason !== 'blocked'
+
+  async function block() {
+    setBlocking(true)
+    setBlockError('')
+    try {
+      await apiRequest(`/blocks/${threadId}`, { method: 'POST' })
+      setConfirmBlock(false)
+      await thread.reload()
+      onChanged()
+    } catch (error) {
+      setBlockError(error.message)
+    } finally {
+      setBlocking(false)
+    }
+  }
+
+  return (
+    <div
+      ref={panelRef}
+      onKeyDown={(event) => event.key === 'Escape' && onClose()}
+      className="animate-rise-in flex h-[calc(100dvh-15rem-env(safe-area-inset-bottom))] min-h-[340px] scroll-mt-36 flex-col overflow-hidden rounded-2xl border border-border bg-surface-2 md:h-[calc(100dvh-20rem)] lg:h-[600px] lg:scroll-mt-28"
+    >
+      <div className="flex items-center gap-3 border-b border-border px-3 py-3 sm:px-4">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Back to chats"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-text/5 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 xl:hidden"
+        >
+          <ArrowLeftIcon className="h-4 w-4" />
+        </button>
+        {image && (
+          <img src={image} alt="" className={`h-10 w-10 shrink-0 object-cover ${isEvent ? 'rounded-xl' : 'rounded-full'}`} />
+        )}
+        <div className="min-w-0 flex-1">
+          <Link
+            to={isEvent ? `/activities/${threadId}` : `/people/${threadId}`}
+            className="block truncate font-bold transition-colors hover:text-mint focus-visible:text-mint focus-visible:outline-none"
+          >
+            {title}
+          </Link>
+          <p className="truncate text-xs text-muted">
+            {isEvent ? 'Live chat · host and approved guests' : 'Direct message'}
+          </p>
+        </div>
+        {canBlock && !confirmBlock && (
+          <button
+            type="button"
+            onClick={() => setConfirmBlock(true)}
+            className="shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-muted transition hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
+          >
+            Block
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close chat"
+          className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-text/5 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 xl:flex"
+        >
+          <CloseIcon className="h-4 w-4" />
+        </button>
+      </div>
+
+      {confirmBlock && (
+        <div className="border-b border-border bg-danger/5 px-4 py-3">
+          <p className="text-xs leading-relaxed text-text">
+            Block {firstName(person?.name)}? You won’t be able to message each other, any friendship
+            between you ends, and you won’t see their messages in event chats.
+          </p>
+          {blockError && <p role="alert" className="mt-1.5 text-xs text-danger">{blockError}</p>}
+          <div className="mt-2.5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmBlock(false)}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-muted hover:text-text"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={blocking}
+              onClick={block}
+              className="rounded-lg bg-red-800 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {blocking ? 'Blocking…' : 'Block'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <ChatThread
+        thread={thread}
+        meId={meId}
+        placeholder={isEvent ? 'Message the group…' : `Message ${firstName(person?.name)}…`}
+      />
+    </div>
+  )
 }
 
 export default function Inbox() {
-  /*
-   * Chats and updates live in AppContext (persisted to localStorage), so
-   * read state and sent messages survive navigation and refresh.
-   */
-  const {
-    currentUser,
-    activities,
-    chats,
-    updates,
-    markChatRead,
-    sendMessage: sendChatMessage,
-    markUpdatesRead,
-    markUpdateRead,
-  } = useApp()
-  const [activeId, setActiveId] = useState(null)
-  const [draft, setDraft] = useState('')
-  // Messages present when the chat opened; anything after animates in.
-  const [openedCount, setOpenedCount] = useState(0)
+  const { currentUser, updates, markUpdatesRead, markUpdateRead } = useApp()
+  const { user } = useAuth()
+  const meId = user?.id
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [inbox, setInbox] = useState(null)
+  const [inboxError, setInboxError] = useState('')
   const [openTrust, setOpenTrust] = useState(null)
-
   const panelRef = useRef(null)
-  const logRef = useRef(null)
-  const inputRef = useRef(null)
+  const refreshTimer = useRef(null)
 
-  const active = chats.find((c) => c.id === activeId)
-  const unreadChats = chats.filter((c) => c.unread).length
-  const unreadUpdates = updates.filter((u) => !u.read).length
-  const firstName = currentUser.name.split(' ')[0]
+  const eventParam = searchParams.get('event')
+  const dmParam = searchParams.get('dm')
+  const active = eventParam
+    ? { kind: 'event', threadId: eventParam }
+    : dmParam && /^\d+$/.test(dmParam)
+      ? { kind: 'direct', threadId: dmParam }
+      : null
+  const activeKey = active ? threadKey(active.kind, active.threadId) : null
 
-  function openChat(id) {
-    const chat = chats.find((c) => c.id === id)
-    setActiveId(id)
-    setOpenedCount(chat?.messages.length ?? 0)
-    setDraft('')
-    markChatRead(id)
-  }
+  const loadInbox = useCallback(async () => {
+    try {
+      const data = await apiRequest('/inbox')
+      setInbox(data)
+      setInboxError('')
+    } catch (error) {
+      console.error('Failed to load inbox:', error)
+      setInboxError('Your conversations could not be loaded. Please try again.')
+    }
+  }, [])
 
-  function closeChat() {
-    const id = activeId
-    setActiveId(null)
-    // Return keyboard focus to the row that opened the chat.
-    requestAnimationFrame(() => document.getElementById(`chat-row-${id}`)?.focus())
-  }
-
-  function sendMessage(e) {
-    e.preventDefault()
-    if (!draft.trim() || !active) return
-    sendChatMessage(active.id, draft)
-    setDraft('')
-    inputRef.current?.focus()
-  }
-
-  // Keep the newest message in view.
-  const messageCount = active?.messages.length ?? 0
   useEffect(() => {
-    const log = logRef.current
-    if (log) log.scrollTop = log.scrollHeight
-  }, [activeId, messageCount])
+    const initialLoad = window.setTimeout(loadInbox, 0)
+    return () => {
+      window.clearTimeout(initialLoad)
+      window.clearTimeout(refreshTimer.current)
+    }
+  }, [loadInbox])
+
+  /* Several messages in a burst cause one list refresh. */
+  function scheduleRefresh() {
+    window.clearTimeout(refreshTimer.current)
+    refreshTimer.current = window.setTimeout(loadInbox, 400)
+  }
+  useChatEvent('message:new', scheduleRefresh)
+  useChatEvent('thread:access', scheduleRefresh)
+
+  function openThread(kind, threadId) {
+    setSearchParams({ [kind === 'event' ? 'event' : 'dm']: String(threadId) })
+  }
+
+  function closeThread() {
+    const key = activeKey
+    setSearchParams({})
+    loadInbox()
+    // Return keyboard focus to the row that opened the chat.
+    requestAnimationFrame(() => document.getElementById(`thread-row-${key}`)?.focus())
+  }
 
   // Below xl the conversation replaces the list, so bring it into view.
   useEffect(() => {
-    if (!activeId || !window.matchMedia('(max-width: 1279px)').matches) return
+    if (!activeKey || !window.matchMedia('(max-width: 1279px)').matches) return
     panelRef.current?.scrollIntoView({ block: 'start' })
-  }, [activeId])
+  }, [activeKey])
 
-  const participants = active ? participantsFor(active, activities, currentUser.id) : []
+  const eventChats = inbox?.eventChats ?? []
+  const directMessages = inbox?.directMessages ?? []
+  // The open thread is being read, so it never shows as unread.
+  const unreadOf = (kind, threadId, count) => (threadKey(kind, threadId) === activeKey ? 0 : count)
+  const unreadThreads = [
+    ...eventChats.map((chat) => unreadOf('event', chat.activityId, chat.unreadCount)),
+    ...directMessages.map((chat) => unreadOf('direct', chat.person.id, chat.unreadCount)),
+  ].filter(Boolean).length
+  const activeSummary = active?.kind === 'event'
+    ? eventChats.find((chat) => chat.activityId === active.threadId)
+    : directMessages.find((chat) => String(chat.person.id) === active?.threadId)
+
+  const unreadUpdates = updates.filter((u) => !u.read).length
+  const viewerFirstName = firstName(currentUser.name)
 
   return (
     <div className="wide-screen-container mx-auto max-w-[1600px] space-y-8 px-5 py-8 sm:px-6">
@@ -136,185 +297,99 @@ export default function Inbox() {
       </div>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-        {/* ================= ACTIVITY CHATS ================= */}
+        {/* ================= CONVERSATIONS ================= */}
         <section aria-labelledby="chats-heading" className="min-w-0 lg:col-span-2">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 id="chats-heading" className="text-xs font-bold uppercase tracking-widest text-muted">
-              Activity chats
+              Conversations
             </h2>
             <p className="text-sm font-semibold text-mint">
-              {chats.length} active
-              {unreadChats > 0 && (
-                <span className="font-medium text-muted"> · {unreadChats} unread</span>
+              {eventChats.length + directMessages.length} active
+              {unreadThreads > 0 && (
+                <span className="font-medium text-muted"> · {unreadThreads} unread</span>
               )}
             </p>
           </div>
 
+          {inboxError && (
+            <p role="alert" className="mb-3 rounded-xl bg-danger/10 p-3 text-sm text-danger">{inboxError}</p>
+          )}
+
           <div className={active ? 'xl:grid xl:grid-cols-[320px_minmax(0,1fr)] xl:gap-4' : ''}>
-            {/* Chat list (hidden below xl while a conversation is open) */}
-            <ul className={`space-y-2.5 ${active ? 'hidden xl:block' : ''}`}>
-              {chats.map((c) => {
-                const selected = c.id === activeId
-                return (
-                  <li key={c.id}>
-                    <button
-                      id={`chat-row-${c.id}`}
-                      type="button"
-                      onClick={() => openChat(c.id)}
-                      aria-current={selected ? 'true' : undefined}
-                      className={`group flex w-full items-center gap-3.5 rounded-2xl border p-3 text-left transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 sm:gap-4 sm:p-3.5 ${
-                        selected
-                          ? 'border-mint/50 bg-mint/[0.07]'
-                          : 'border-border bg-surface-2 hover:border-text/20 hover:bg-surface-3/60'
-                      }`}
-                    >
-                      <img src={c.image} alt="" className="h-14 w-14 shrink-0 rounded-xl object-cover" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline justify-between gap-3">
-                          <p className={`truncate ${c.unread ? 'font-extrabold text-text' : 'font-bold text-text'}`}>
-                            {c.title}
-                          </p>
-                          <span className={`shrink-0 text-xs ${c.unread ? 'font-semibold text-mint' : 'text-muted'}`}>
-                            {c.time}
-                          </span>
-                        </div>
-                        <div className="mt-1 flex items-center gap-3">
-                          <p className={`min-w-0 flex-1 truncate text-sm ${c.unread ? 'text-text' : 'text-muted'}`}>
-                            {c.lastMessage}
-                          </p>
-                          {c.unread && (
-                            <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-mint">
-                              <span className="sr-only">Unread</span>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <ChevronRightIcon
-                        className={`h-4 w-4 shrink-0 transition-transform duration-200 group-hover:translate-x-0.5 ${
-                          selected ? 'text-mint' : 'text-muted'
-                        } ${active ? 'xl:hidden' : ''}`}
-                      />
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+            {/* Thread lists (hidden below xl while a conversation is open) */}
+            <div className={`space-y-6 ${active ? 'hidden xl:block' : ''}`}>
+              {!inbox && !inboxError && (
+                <p className="rounded-2xl border border-border bg-surface-2 p-5 text-sm text-muted">Loading conversations…</p>
+              )}
+
+              {inbox && (
+                <>
+                  <div>
+                    <h3 className="mb-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-2">Event chats</h3>
+                    {eventChats.length ? (
+                      <ul className="space-y-2.5">
+                        {eventChats.map((chat) => (
+                          <ThreadRow
+                            key={chat.activityId}
+                            id={`thread-row-${threadKey('event', chat.activityId)}`}
+                            selected={activeKey === threadKey('event', chat.activityId)}
+                            onOpen={() => openThread('event', chat.activityId)}
+                            image={chat.image}
+                            title={chat.title}
+                            preview={previewText(chat.lastMessage, meId, 'event')}
+                            time={formatThreadTime(chat.lastMessage?.createdAt)}
+                            unread={unreadOf('event', chat.activityId, chat.unreadCount)}
+                          />
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">
+                        Plans you host or get approved for open a live chat here.
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <h3 className="mb-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-2">Messages</h3>
+                    {directMessages.length ? (
+                      <ul className="space-y-2.5">
+                        {directMessages.map((chat) => (
+                          <ThreadRow
+                            key={chat.person.id}
+                            id={`thread-row-${threadKey('direct', chat.person.id)}`}
+                            selected={activeKey === threadKey('direct', chat.person.id)}
+                            onOpen={() => openThread('direct', chat.person.id)}
+                            image={chat.person.avatar || avatarPlaceholder}
+                            round
+                            title={chat.person.name}
+                            preview={previewText(chat.lastMessage, meId, 'direct')}
+                            time={formatThreadTime(chat.lastMessage?.createdAt)}
+                            unread={unreadOf('direct', chat.person.id, chat.unreadCount)}
+                          />
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">
+                        Message a friend from their profile, or your host once you’re approved.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
 
             {/* Conversation panel */}
             {active && (
-              <div
-                key={active.id}
-                ref={panelRef}
-                onKeyDown={(e) => e.key === 'Escape' && closeChat()}
-                className="animate-rise-in flex h-[calc(100dvh-15rem-env(safe-area-inset-bottom))] min-h-[340px] scroll-mt-36 flex-col overflow-hidden rounded-2xl border border-border bg-surface-2 md:h-[calc(100dvh-20rem)] lg:h-[600px] lg:scroll-mt-28"
-              >
-                <div className="flex items-center gap-3 border-b border-border px-3 py-3 sm:px-4">
-                  <button
-                    type="button"
-                    onClick={closeChat}
-                    aria-label="Back to chats"
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-text/5 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 xl:hidden"
-                  >
-                    <ArrowLeftIcon className="h-4 w-4" />
-                  </button>
-                  <img src={active.image} alt="" className="h-10 w-10 shrink-0 rounded-xl object-cover" />
-                  <div className="min-w-0 flex-1">
-                    <Link
-                      to={`/activities/${active.activityId}`}
-                      className="block truncate font-bold transition-colors hover:text-mint focus-visible:text-mint focus-visible:outline-none"
-                    >
-                      {active.title}
-                    </Link>
-                    <p className="truncate text-xs text-muted">
-                      You, {participants.slice(0, 2).map((p) => p.name.split(' ')[0]).join(', ')}
-                      {participants.length > 2 && ` +${participants.length - 2}`}
-                    </p>
-                  </div>
-                  <div className="hidden shrink-0 sm:block">
-                    <AvatarStack people={participants} max={3} size={26} />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={closeChat}
-                    aria-label="Close chat"
-                    className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-text/5 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 xl:flex"
-                  >
-                    <CloseIcon className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <div
-                  ref={logRef}
-                  role="log"
-                  aria-label={`Messages in ${active.title}`}
-                  className="flex-1 space-y-1 overflow-y-auto px-3 py-4 sm:px-4"
-                >
-                  {active.messages.map((m, i) => {
-                    const mine = m.from === 'me'
-                    const sender = PEOPLE_BY_ID[m.from]
-                    const firstInRun = i === 0 || active.messages[i - 1].from !== m.from
-
-                    return (
-                      <div
-                        key={i}
-                        className={`flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'} ${
-                          firstInRun && i > 0 ? 'pt-2.5' : ''
-                        } ${i >= openedCount ? 'animate-rise-in' : ''}`}
-                      >
-                        {!mine && (
-                          <span className="w-7 shrink-0">
-                            {firstInRun && sender && (
-                              <img src={sender.avatar} alt="" className="h-7 w-7 rounded-full object-cover" />
-                            )}
-                          </span>
-                        )}
-                        <div className={`flex max-w-[78%] flex-col ${mine ? 'items-end' : 'items-start'}`}>
-                          {!mine && firstInRun && sender && (
-                            <span className="mb-1 px-1 text-[11px] font-semibold text-muted">
-                              {sender.name.split(' ')[0]}
-                            </span>
-                          )}
-                          <div
-                            className={`rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
-                              mine ? 'rounded-br-md bg-mint text-bg' : 'rounded-bl-md bg-surface-3 text-text'
-                            }`}
-                          >
-                            {m.text}
-                            <div className={`mt-0.5 text-[10px] ${mine ? 'text-bg/70 [[data-theme=light]_&]:text-bg/90' : 'text-muted'}`}>
-                              {m.time}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-
-                <form onSubmit={sendMessage} className="border-t border-border p-3">
-                  <div className="flex items-center gap-2">
-                    <input
-                      ref={inputRef}
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      placeholder="Message the group..."
-                      aria-label={`Message ${active.title}`}
-                      enterKeyHint="send"
-                      className="min-w-0 flex-1 rounded-full border border-border bg-surface px-4 py-2.5 text-sm text-text outline-none transition-colors placeholder:text-muted hover:border-text/20 focus:border-mint/60"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!draft.trim()}
-                      aria-label="Send message"
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-mint text-bg transition-[opacity,transform] duration-150 hover:bg-mint/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-2"
-                    >
-                      <ArrowRightIcon className="h-4 w-4" />
-                    </button>
-                  </div>
-                  <p className="mt-2 px-1 text-[11px] text-muted-2">
-                    Messages are saved on this device only for now.
-                  </p>
-                </form>
-              </div>
+              <ThreadPanel
+                key={activeKey}
+                kind={active.kind}
+                threadId={active.threadId}
+                summary={activeSummary}
+                meId={meId}
+                onClose={closeThread}
+                onChanged={loadInbox}
+                panelRef={panelRef}
+              />
             )}
           </div>
         </section>
@@ -348,7 +423,7 @@ export default function Inbox() {
                 <span className="flex h-11 w-11 items-center justify-center rounded-full bg-mint/10 text-mint">
                   <CheckIcon className="h-5 w-5" />
                 </span>
-                <p className="mt-3 text-sm font-bold">You're all caught up, {firstName}.</p>
+                <p className="mt-3 text-sm font-bold">You're all caught up, {viewerFirstName}.</p>
                 <p className="mt-1 text-xs text-muted">New plan updates will show up here.</p>
               </div>
             ) : (
@@ -358,7 +433,7 @@ export default function Inbox() {
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-mint/15 text-mint">
                       <CheckIcon className="h-3.5 w-3.5" />
                     </span>
-                    <p className="text-xs font-semibold">You're all caught up, {firstName}.</p>
+                    <p className="text-xs font-semibold">You're all caught up, {viewerFirstName}.</p>
                   </div>
                 )}
                 <ul className="space-y-2">

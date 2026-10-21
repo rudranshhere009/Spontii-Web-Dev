@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS activity_join_requests (
   request_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   activity_id BIGINT UNSIGNED NOT NULL,
   applicant_client_id BIGINT UNSIGNED NOT NULL,
-  status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+  status ENUM('pending', 'approved', 'rejected', 'removed') NOT NULL DEFAULT 'pending',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   reviewed_at DATETIME NULL,
   PRIMARY KEY (request_id),
@@ -186,6 +186,91 @@ CREATE TABLE IF NOT EXISTS friendships (
   CONSTRAINT fk_friendship_recipient_client
     FOREIGN KEY (recipient_client_id) REFERENCES clients (client_id) ON DELETE CASCADE,
   CONSTRAINT chk_friendship_distinct_clients CHECK (client_low_id < client_high_id)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS user_blocks (
+  blocker_client_id BIGINT UNSIGNED NOT NULL,
+  blocked_client_id BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (blocker_client_id, blocked_client_id),
+  KEY idx_user_blocks_blocked (blocked_client_id),
+  CONSTRAINT fk_user_block_blocker
+    FOREIGN KEY (blocker_client_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_block_blocked
+    FOREIGN KEY (blocked_client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+-- No activity foreign key: events are deleted when they end, DM history is not.
+CREATE TABLE IF NOT EXISTS direct_conversations (
+  conversation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_low_id BIGINT UNSIGNED NOT NULL,
+  client_high_id BIGINT UNSIGNED NOT NULL,
+  low_last_read_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  high_last_read_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  last_message_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (conversation_id),
+  UNIQUE KEY uq_direct_conversation_pair (client_low_id, client_high_id),
+  KEY idx_direct_conversation_high (client_high_id, last_message_at),
+  CONSTRAINT fk_direct_conversation_low
+    FOREIGN KEY (client_low_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+  CONSTRAINT fk_direct_conversation_high
+    FOREIGN KEY (client_high_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+  CONSTRAINT chk_direct_conversation_distinct CHECK (client_low_id < client_high_id)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS direct_messages (
+  message_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  conversation_id BIGINT UNSIGNED NOT NULL,
+  sender_client_id BIGINT UNSIGNED NOT NULL,
+  message_text VARCHAR(2000) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (message_id),
+  KEY idx_direct_messages_conversation (conversation_id, message_id),
+  KEY idx_direct_messages_retention (created_at),
+  CONSTRAINT fk_direct_message_conversation
+    FOREIGN KEY (conversation_id) REFERENCES direct_conversations (conversation_id) ON DELETE CASCADE,
+  CONSTRAINT fk_direct_message_sender
+    FOREIGN KEY (sender_client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS activity_chat_reads (
+  activity_id BIGINT UNSIGNED NOT NULL,
+  client_id BIGINT UNSIGNED NOT NULL,
+  last_read_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (activity_id, client_id),
+  CONSTRAINT fk_activity_chat_read_activity
+    FOREIGN KEY (activity_id) REFERENCES activities (activity_id) ON DELETE CASCADE,
+  CONSTRAINT fk_activity_chat_read_client
+    FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+-- The snapshot outlives the message, which may be deleted by retention.
+CREATE TABLE IF NOT EXISTS message_reports (
+  report_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  reporter_client_id BIGINT UNSIGNED NOT NULL,
+  reported_client_id BIGINT UNSIGNED NOT NULL,
+  source ENUM('event', 'direct') NOT NULL,
+  message_id BIGINT UNSIGNED NOT NULL,
+  message_snapshot VARCHAR(2000) NOT NULL,
+  reason VARCHAR(40) NOT NULL,
+  status ENUM('open', 'reviewed', 'actioned') NOT NULL DEFAULT 'open',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (report_id),
+  UNIQUE KEY uq_message_report_once (reporter_client_id, source, message_id),
+  KEY idx_message_reports_status (status, created_at),
+  CONSTRAINT fk_message_report_reporter
+    FOREIGN KEY (reporter_client_id) REFERENCES clients (client_id) ON DELETE CASCADE
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;

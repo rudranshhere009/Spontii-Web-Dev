@@ -54,8 +54,8 @@ coordinates are returned to the host and approved attendees. Join requests are
 stored in `activity_join_requests`; hosts can review them from the event detail
 page, and each event configures when requests close (15 minutes before start by
 default). Only approved attendees and the host can view attendee profiles or use
-the event's database-backed live chat. Chat messages older than 24 hours are
-deleted during cleanup and chat reads. Hosts can complete an event early with
+the event's database-backed live chat. Live chat messages older than 24 hours
+are deleted by the cleanup interval. Hosts can complete an event early with
 `PATCH /api/activities/:id/complete`; otherwise it is completed automatically
 at its scheduled end, its host notification is cleared, and the event and
 attached media are removed. Expiry runs at startup and on a one-minute cleanup
@@ -69,5 +69,31 @@ request creates a notification for the recipient; accepting it makes both
 accounts friends and unlocks friends-only events between them. The Home friend
 section lists accepted friends only.
 
+Chat lives in `server/chat.js`. Who can message whom is decided on the server
+for every message:
+
+- Event live chat: the host and approved attendees, while the event is active.
+  Hosts can remove an attendee, which closes the live chat and host messages
+  for them and stops them requesting again.
+- Direct messages: accepted friends, or a host and an approved attendee of the
+  same active event. Attendees who aren't friends talk only in the live chat.
+  When the event ends, host ↔ attendee history stays readable but closed until
+  they become friends.
+- Blocking (either direction) stops direct messages, ends any friendship,
+  hides each person from the other's search and hides the blocked person's
+  live chat messages from the blocker. People can report messages; the text is
+  saved in `message_reports` so it survives message cleanup.
+- Messages are sent over REST (20 per minute per account) and delivered in
+  real time over Socket.IO on the same port. The socket only pushes; it
+  authenticates with the session cookie and checks the Origin. Direct messages
+  are kept for 90 days. A declined friend request can't be resent for 7 days.
+
+The API runs as a single instance; running several would need a shared
+Socket.IO adapter such as `@socket.io/redis-adapter`, and the API host must
+support WebSockets.
+
 For a separately hosted frontend, set `VITE_API_BASE_URL` to the API's base
-URL and configure `FRONTEND_ORIGIN` on the API to the exact frontend origin.
+URL and configure `FRONTEND_ORIGIN` on the API to the exact frontend origin
+(comma-separate several). In production, `FRONTEND_ORIGIN` is required:
+requests that change data are rejected unless their `Origin` matches it,
+because the session cookie is sent cross-site (`SameSite=None`).

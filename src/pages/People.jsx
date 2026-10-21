@@ -4,6 +4,7 @@ import { apiRequest } from '../lib/api'
 import avatarPlaceholder from '../assets/avatar-placeholder.svg'
 import {
   ArrowLeftIcon,
+  ChatIcon,
   CheckIcon,
   MapPinIcon,
   SearchIcon,
@@ -33,6 +34,7 @@ export default function People() {
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState(false)
   const [unfriendConfirm, setUnfriendConfirm] = useState(false)
+  const [blockConfirm, setBlockConfirm] = useState(false)
   const [error, setError] = useState('')
   const requestsTab = new URLSearchParams(location.search).get('tab') === 'requests'
 
@@ -40,6 +42,30 @@ export default function People() {
     const data = await apiRequest('/friends')
     setFriends(data.friends)
     setIncomingRequests(data.incomingRequests)
+  }
+
+  /* After a relationship change, the server decides again whether you can message them. */
+  async function reloadPerson() {
+    if (!id) return
+    const { person: loadedPerson } = await apiRequest(`/people/${id}`)
+    setPerson(loadedPerson)
+    setRelationship(loadedPerson?.relationship || 'none')
+  }
+
+  async function setBlocked(targetId, blocked) {
+    setWorking(true)
+    setError('')
+    try {
+      await apiRequest(`/blocks/${targetId}`, { method: blocked ? 'POST' : 'DELETE' })
+      setBlockConfirm(false)
+      setUnfriendConfirm(false)
+      await reloadPerson()
+      window.dispatchEvent(new Event('spontii:friends-changed'))
+    } catch (blockError) {
+      setError(blockError.message)
+    } finally {
+      setWorking(false)
+    }
   }
 
   useEffect(() => {
@@ -113,9 +139,7 @@ export default function People() {
       await apiRequest(`/friends/requests/${request.requestId}/${action}`, { method: 'PATCH' })
       await loadFriends()
       window.dispatchEvent(new Event('spontii:friends-changed'))
-      if (id && person?.id === request.id) {
-        setRelationship(action === 'accept' ? 'friends' : 'none')
-      }
+      if (id && person?.id === request.id) await reloadPerson()
     } catch (responseError) {
       setError(responseError.message)
     } finally {
@@ -145,9 +169,9 @@ export default function People() {
     setError('')
     try {
       await apiRequest(`/friends/${targetId}`, { method: 'DELETE' })
-      setRelationship('none')
       setFriends((current) => current.filter((friend) => friend.id !== targetId))
       setUnfriendConfirm(false)
+      await reloadPerson()
       window.dispatchEvent(new Event('spontii:friends-changed'))
     } catch (unfriendError) {
       setError(unfriendError.message)
@@ -195,13 +219,28 @@ export default function People() {
                   </div>
                 </div>
 
-                <div className="flex justify-center gap-2 sm:mb-2 sm:justify-end">
-                  {relationship === 'none' && (
+                <div className="flex flex-wrap justify-center gap-2 sm:mb-2 sm:justify-end">
+                  {person.blocked && (
+                    <div className="flex flex-col items-center gap-2 sm:items-end">
+                      <span className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-3 text-sm font-bold text-muted">
+                        You blocked {person.name.split(' ')[0]}
+                      </span>
+                      <button type="button" disabled={working} onClick={() => void setBlocked(person.id, false)} className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-text transition hover:border-mint/40 hover:text-mint disabled:opacity-50">
+                        {working ? 'Unblocking…' : 'Unblock'}
+                      </button>
+                    </div>
+                  )}
+                  {!person.blocked && (person.canMessage || relationship === 'friends') && (
+                    <Link to={`/inbox?dm=${person.id}`} className="inline-flex items-center gap-2 self-start rounded-xl border border-mint/40 bg-mint-soft px-5 py-3 text-sm font-extrabold text-mint transition hover:-translate-y-0.5 hover:bg-mint/15">
+                      <ChatIcon className="h-4 w-4" /> Message
+                    </Link>
+                  )}
+                  {!person.blocked && relationship === 'none' && (
                     <button type="button" disabled={working} onClick={() => sendRequest(person.id)} className="inline-flex items-center gap-2 rounded-xl bg-mint px-5 py-3 text-sm font-extrabold text-bg shadow-lg shadow-mint/10 transition hover:-translate-y-0.5 hover:bg-mint/90 disabled:opacity-50">
                       <UsersIcon className="h-4 w-4" /> {working ? 'Sending…' : 'Add friend'}
                     </button>
                   )}
-                  {relationship === 'outgoing' && (
+                  {!person.blocked && relationship === 'outgoing' && (
                     <div className="flex flex-wrap items-center justify-center gap-2">
                       <span className="inline-flex items-center gap-2 rounded-xl border border-mint/25 bg-mint-soft px-4 py-3 text-sm font-bold text-mint">
                         <CheckIcon className="h-4 w-4" /> Request sent
@@ -211,7 +250,7 @@ export default function People() {
                       </button>
                     </div>
                   )}
-                  {relationship === 'friends' && (
+                  {!person.blocked && relationship === 'friends' && (
                     <div className="flex flex-col items-center gap-2 sm:items-end">
                       <span className="inline-flex items-center gap-2 rounded-xl border border-mint/30 bg-mint-soft px-5 py-3 text-sm font-extrabold text-mint">
                         <UsersIcon className="h-4 w-4" /> You’re friends
@@ -236,7 +275,7 @@ export default function People() {
                       )}
                     </div>
                   )}
-                  {relationship === 'incoming' && (
+                  {!person.blocked && relationship === 'incoming' && (
                     <div className="flex gap-2">
                       <button type="button" disabled={working} onClick={() => respond({ id: person.id, requestId: person.requestId }, 'accept')} className="rounded-xl bg-mint px-4 py-3 text-sm font-bold text-bg disabled:opacity-50">Accept request</button>
                       <button type="button" disabled={working} onClick={() => respond({ id: person.id, requestId: person.requestId }, 'reject')} className="rounded-xl border border-border px-4 py-3 text-sm font-semibold text-muted hover:border-danger/40 hover:text-danger disabled:opacity-50">Decline</button>
@@ -244,6 +283,27 @@ export default function People() {
                   )}
                 </div>
               </div>
+
+              {!person.blocked && (
+                <div className="mt-4 flex justify-center sm:justify-end">
+                  {blockConfirm ? (
+                    <div className="max-w-sm rounded-xl border border-red-900/70 bg-red-950/40 p-3">
+                      <p className="text-xs font-semibold text-red-100">
+                        Block {person.name}? You won’t be able to message each other, any friendship ends,
+                        and you won’t see their messages in event chats.
+                      </p>
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button type="button" disabled={working} onClick={() => setBlockConfirm(false)} className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-muted hover:text-text">Cancel</button>
+                        <button type="button" disabled={working} onClick={() => void setBlocked(person.id, true)} className="rounded-lg bg-red-800 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50">{working ? 'Blocking…' : 'Block'}</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setBlockConfirm(true)} className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-muted transition hover:bg-danger/10 hover:text-danger">
+                      Block {person.name.split(' ')[0]}
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="mt-7 grid gap-4 border-t border-border pt-6 lg:grid-cols-[minmax(0,1fr)_250px]">
                 <section className="rounded-2xl border border-border bg-surface p-5 sm:p-6">

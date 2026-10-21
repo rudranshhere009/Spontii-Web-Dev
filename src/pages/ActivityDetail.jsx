@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { useApp } from '../context/AppContext'
@@ -6,7 +6,9 @@ import { useAuth } from '../context/AuthContext'
 import { apiRequest } from '../lib/api'
 
 import AvatarStack from '../components/AvatarStack'
+import ChatThread from '../components/ChatThread'
 import { GuestJoinDialog, RequestSentDialog } from '../components/JoinDialogs'
+import { useChatThread } from '../hooks/useChatThread'
 import {
   genderPreferenceLabel,
   genderPreferenceOf,
@@ -64,11 +66,8 @@ export default function ActivityDetail() {
   const [reviewingRequest, setReviewingRequest] = useState('')
   const [requestListError, setRequestListError] = useState('')
   const [chatOpen, setChatOpen] = useState(false)
-  const [chatMessages, setChatMessages] = useState([])
-  const [chatDraft, setChatDraft] = useState('')
-  const [chatLoading, setChatLoading] = useState(false)
-  const [chatSending, setChatSending] = useState(false)
-  const [chatError, setChatError] = useState('')
+  const [confirmRemoveId, setConfirmRemoveId] = useState(null)
+  const [removingAttendee, setRemovingAttendee] = useState(false)
   // Focus target after a dialog closes (the action card shows the new status)
   const actionCardRef = useRef(null)
 
@@ -91,28 +90,6 @@ export default function ActivityDetail() {
   const hosting = participation?.status === 'hosting'
   const approved = participation?.status === 'going'
   const canUseLiveChat = Boolean(activity?.databaseBacked && (hosting || approved))
-
-  useEffect(() => {
-    if (!chatOpen || !canUseLiveChat) return undefined
-    let active = true
-    const loadMessages = async () => {
-      try {
-        const { messages } = await apiRequest(`/activities/${id}/chat`)
-        if (active && Array.isArray(messages)) setChatMessages(messages)
-        if (active) setChatError('')
-      } catch (error) {
-        if (active) setChatError(error.message)
-      } finally {
-        if (active) setChatLoading(false)
-      }
-    }
-    loadMessages()
-    const interval = window.setInterval(loadMessages, 4000)
-    return () => {
-      active = false
-      window.clearInterval(interval)
-    }
-  }, [id, chatOpen, canUseLiveChat])
 
   /* =========================================================
      PLAN NOT FOUND
@@ -152,6 +129,8 @@ export default function ActivityDetail() {
   const isApproved = status === 'going'
 
   const rejected = status === 'rejected'
+
+  const removed = status === 'removed'
 
   const isHosting = status === 'hosting'
 
@@ -212,7 +191,7 @@ export default function ActivityDetail() {
   }
 
   function handleRequest() {
-    if (hosting || pending || approved || isFull) {
+    if (hosting || pending || approved || removed || isFull) {
       return
     }
 
@@ -375,29 +354,21 @@ export default function ActivityDetail() {
     }
   }
 
-  async function sendChatMessage(event) {
-    event.preventDefault()
-    const text = chatDraft.trim()
-    if (!text || chatSending) return
-    setChatSending(true)
-    setChatError('')
+  /* Host only: the attendee loses the live chat, host DMs and the exact venue. */
+  async function removeAttendee(personId) {
+    setRemovingAttendee(true)
+    setAttendeeError('')
     try {
-      const { message } = await apiRequest(`/activities/${activity.id}/chat`, {
-        method: 'POST',
-        body: { text },
-      })
-      setChatDraft('')
-      setChatMessages((current) => [...current, {
-        ...message,
-        sender: { id: currentUser.id, name: currentUser.name },
-      }])
-      apiRequest(`/activities/${activity.id}/chat`)
-        .then(({ messages }) => setChatMessages(messages || []))
-        .catch((error) => console.error('Failed to refresh event live chat:', error))
+      await apiRequest(`/activities/${activity.id}/attendees/${personId}`, { method: 'DELETE' })
+      setAttendees((current) => current.filter((person) => person.id !== personId))
+      setConfirmRemoveId(null)
+      refreshServerActivities().catch((error) =>
+        console.error('Failed to refresh events after removing an attendee:', error),
+      )
     } catch (error) {
-      setChatError(error.message)
+      setAttendeeError(error.message)
     } finally {
-      setChatSending(false)
+      setRemovingAttendee(false)
     }
   }
 
@@ -975,6 +946,7 @@ export default function ActivityDetail() {
                 hosting ||
                 approved ||
                 pending ||
+                removed ||
                 isFull
               }
               className={`mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-bold transition-colors ${
@@ -982,7 +954,7 @@ export default function ActivityDetail() {
                   ? 'cursor-default border border-mint bg-mint-soft text-mint'
                   : pending
                     ? 'cursor-default border border-border bg-surface-3 text-muted'
-                    : isFull
+                    : isFull || removed
                       ? 'cursor-not-allowed bg-surface-3 text-muted'
                       : 'bg-mint text-bg hover:bg-mint/90'
               }`}
@@ -1006,6 +978,8 @@ export default function ActivityDetail() {
 
                   Request pending
                 </>
+              ) : removed ? (
+                'The host removed you from this plan'
               ) : isFull ? (
                 'Plan is full'
               ) : rejected ? (
@@ -1120,6 +1094,16 @@ export default function ActivityDetail() {
                       available to you.
                     </p>
 
+                    {activity.databaseBacked && (
+                      <Link
+                        to={`/inbox?dm=${activity.host.id}`}
+                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-mint/40 px-3 py-1.5 text-xs font-bold text-mint transition hover:bg-mint/10"
+                      >
+                        <ChatIcon className="h-3.5 w-3.5" />
+                        Message {(activity.host.name || 'the host').split(' ')[0]}
+                      </Link>
+                    )}
+
                   </div>
 
                 </div>
@@ -1159,7 +1143,6 @@ export default function ActivityDetail() {
                 type="button"
                 onClick={() => {
                   if (!canUseLiveChat) return
-                  if (!chatOpen) setChatLoading(true)
                   setChatOpen((open) => !open)
                 }}
                 disabled={!canUseLiveChat}
@@ -1203,69 +1186,11 @@ export default function ActivityDetail() {
             ================================================= */}
 
             {canUseLiveChat && chatOpen && (
-              <section className="mt-5 flex h-[min(72vh,680px)] min-h-[540px] flex-col overflow-hidden rounded-2xl border border-mint/20 bg-surface-2 shadow-[0_18px_55px_rgba(0,0,0,0.2)]" aria-label="Event live chat">
-                <header className="flex items-center justify-between border-b border-border bg-surface px-4 py-3.5">
-                  <div className="flex items-center gap-3">
-                    <span className="relative grid h-10 w-10 place-items-center rounded-xl border border-mint/20 bg-mint/10">
-                      <ChatIcon className="h-4 w-4 text-mint" />
-                      <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-mint" />
-                    </span>
-                    <div>
-                      <h3 className="text-sm font-bold text-text">Live event chat</h3>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setChatOpen(false)}
-                    aria-label="Close live chat"
-                    className="rounded-lg border border-red-950 bg-red-900 px-3 py-1.5 text-xs font-bold text-white transition hover:border-red-800 hover:bg-red-800"
-                  >
-                    Close
-                  </button>
-                </header>
-                <div className="flex-1 space-y-3 overflow-y-auto bg-bg/25 px-4 py-4" aria-live="polite">
-                  {chatLoading && chatMessages.length === 0 && <p className="rounded-xl border border-border bg-surface px-4 py-3 text-xs text-muted">Loading the conversation…</p>}
-                  {!chatLoading && chatMessages.length === 0 && (
-                    <div className="flex h-full min-h-56 flex-col items-center justify-center px-5 text-center">
-                      <span className="grid h-12 w-12 place-items-center rounded-2xl border border-mint/20 bg-mint/10 text-mint"><ChatIcon className="h-5 w-5" /></span>
-                      <p className="mt-3 text-sm font-bold text-text">The conversation starts here</p>
-                      <p className="mt-1 max-w-xs text-xs leading-relaxed text-muted">Say hello to the other attendees and start planning the fun.</p>
-                    </div>
-                  )}
-                  {chatMessages.map((message) => (
-                    <article key={message.id} className="rounded-2xl border border-border/80 bg-surface px-3.5 py-3 shadow-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="flex min-w-0 items-center gap-2">
-                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-mint/10 text-[10px] font-extrabold text-mint">{(message.sender.name || '?').trim().charAt(0).toUpperCase()}</span>
-                          <span className="truncate text-xs font-bold text-text">{message.sender.name}</span>
-                        </span>
-                        <time className="shrink-0 text-[10px] text-muted">
-                          {new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-                        </time>
-                      </div>
-                      <p className="mt-2 break-words pl-9 text-sm leading-relaxed text-muted">{message.text}</p>
-                    </article>
-                  ))}
-                </div>
-                {chatError && <p role="alert" className="mx-3 mb-2 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{chatError}</p>}
-                <form onSubmit={sendChatMessage} className="flex gap-2 border-t border-border bg-surface p-3.5">
-                  <input
-                    value={chatDraft}
-                    onChange={(event) => setChatDraft(event.target.value)}
-                    maxLength={2000}
-                    placeholder="Message the attendees…"
-                    aria-label="Chat message"
-                    className="min-w-0 flex-1 rounded-xl border border-border bg-bg px-3.5 py-2.5 text-sm text-text outline-none transition focus:border-mint focus:ring-2 focus:ring-mint/10"
-                  />
-                  <button
-                    type="submit"
-                    disabled={chatSending || !chatDraft.trim()}
-                    className="rounded-xl bg-mint px-4 py-2.5 text-sm font-bold text-bg transition hover:bg-mint/90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {chatSending ? 'Sending…' : 'Send'}
-                  </button>
-                </form>
-              </section>
+              <EventLiveChat
+                activityId={activity.id}
+                meId={currentUser.id}
+                onClose={() => setChatOpen(false)}
+              />
             )}
 
           </div>
@@ -1346,10 +1271,60 @@ export default function ActivityDetail() {
                     <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-mint-soft text-sm font-bold text-mint">
                       {(person.name || 'S').slice(0, 1).toUpperCase()}
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="font-bold text-text">{person.name}{person.id === activity.host.id ? <span className="ml-2 rounded-full bg-mint-soft px-2 py-0.5 text-[10px] font-bold uppercase text-mint">Host</span> : null}</p>
                       <p className="mt-0.5 text-xs text-muted">{person.tagline || person.city || 'Spontii member'}</p>
                       {person.bio && <p className="mt-2 text-sm leading-relaxed text-muted">{person.bio}</p>}
+                      {activity.databaseBacked && person.id !== currentUser.id && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {/* DMs: host ↔ guest only. Guests reach each other in the live chat or as friends. */}
+                          {(hosting || person.id === activity.host.id) && (
+                            <Link
+                              to={`/inbox?dm=${person.id}`}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-mint px-3 py-1.5 text-xs font-bold text-bg transition hover:bg-mint/90"
+                            >
+                              <ChatIcon className="h-3.5 w-3.5" />
+                              Message
+                            </Link>
+                          )}
+                          <Link
+                            to={`/people/${person.id}`}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-muted transition hover:border-mint/40 hover:text-text"
+                          >
+                            View profile
+                          </Link>
+                          {hosting && person.id !== activity.host.id && (
+                            confirmRemoveId === person.id ? (
+                              <span className="flex items-center gap-2 text-xs">
+                                <span className="text-muted">Remove from this plan?</span>
+                                <button
+                                  type="button"
+                                  disabled={removingAttendee}
+                                  onClick={() => void removeAttendee(person.id)}
+                                  className="rounded-lg bg-red-800 px-3 py-1.5 font-bold text-white hover:bg-red-700 disabled:opacity-50"
+                                >
+                                  {removingAttendee ? 'Removing…' : 'Remove'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmRemoveId(null)}
+                                  className="font-semibold text-muted hover:text-text"
+                                >
+                                  Cancel
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmRemoveId(person.id)}
+                                className="rounded-lg px-2 py-1.5 text-xs font-semibold text-muted transition hover:bg-danger/10 hover:text-danger"
+                              >
+                                Remove
+                              </button>
+                            )
+                          )}
+                        </div>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -1412,6 +1387,42 @@ export default function ActivityDetail() {
   )
 }
 
+
+/* =========================================================
+   EVENT LIVE CHAT (host + approved attendees, real time)
+========================================================= */
+
+function EventLiveChat({ activityId, meId, onClose }) {
+  const thread = useChatThread('event', activityId)
+
+  return (
+    <section className="mt-5 flex h-[min(72vh,680px)] min-h-[540px] flex-col overflow-hidden rounded-2xl border border-mint/20 bg-surface-2 shadow-[0_18px_55px_rgba(0,0,0,0.2)]" aria-label="Event live chat">
+      <header className="flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-3.5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="relative grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-mint/20 bg-mint/10">
+            <ChatIcon className="h-4 w-4 text-mint" />
+            <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-mint" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-sm font-bold text-text">Live event chat</h3>
+            <Link to={`/inbox?event=${activityId}`} className="text-[11px] font-semibold text-mint hover:underline">
+              Open in Inbox
+            </Link>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close live chat"
+          className="shrink-0 rounded-lg border border-red-950 bg-red-900 px-3 py-1.5 text-xs font-bold text-white transition hover:border-red-800 hover:bg-red-800"
+        >
+          Close
+        </button>
+      </header>
+      <ChatThread thread={thread} meId={meId} placeholder="Message the attendees…" />
+    </section>
+  )
+}
 
 /* =========================================================
    DETAIL ROW
