@@ -779,7 +779,7 @@ export default function Navbar() {
     {/* Floating Create Plan button (tablet/desktop; phones use the bottom bar).
         Rendered outside <header>: its backdrop-blur would otherwise make `fixed`
         relative to the header. /create handles the login redirect. */}
-    {pathname !== "/create" && (
+    {pathname !== "/create" && !pathname.startsWith("/inbox") && (
       <NavLink
         to="/create"
         aria-label="Create Plan"

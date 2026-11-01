@@ -52,6 +52,15 @@ export function ChatProvider({ children }) {
     }
     function onMessage({ kind, threadId, message }) {
       if (message.sender.id === userId) return
+      window.dispatchEvent(new CustomEvent('spontii:message-received', {
+        detail: {
+          id: `message:${kind}:${threadId}:${message.id}`,
+          title: 'You have a new message',
+          message: `${message.sender.name}: ${message.text}`,
+          type: 'chat_message',
+          route: `/inbox/${kind === 'event' ? 'event' : 'dm'}/${encodeURIComponent(String(threadId))}`,
+        },
+      }))
       if (activeThread.current === threadKey(kind, threadId)) return
       setUnreadTotal((total) => total + 1)
     }

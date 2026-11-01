@@ -8,10 +8,20 @@ import {
   formatMessageTime,
 } from '../lib/chat'
 import { ArrowRightIcon, ChatIcon, FlagIcon, LockIcon } from './NavIcons'
+import avatarPlaceholder from '../assets/avatar-placeholder.svg'
 
 function SenderAvatar({ sender }) {
   if (sender.avatar) {
-    return <img src={sender.avatar} alt="" className="h-7 w-7 rounded-full object-cover" />
+    return (
+      <img
+        src={sender.avatar}
+        alt=""
+        onError={(event) => {
+          event.currentTarget.src = avatarPlaceholder
+        }}
+        className="h-7 w-7 rounded-full object-cover"
+      />
+    )
   }
   return (
     <span className="grid h-7 w-7 place-items-center rounded-full bg-mint/10 text-[10px] font-extrabold text-mint">
@@ -142,6 +152,13 @@ function ReportPicker({ source, messageId, onDone }) {
   )
 }
 
+function messageAccent(text) {
+  if (/\b(party|celebrate|birthday|congrats)\b/i.test(text)) return '🎉'
+  if (/\b(lol|haha|lmao|funny)\b/i.test(text)) return '😂'
+  if (/\b(awesome|amazing|great|cool|nice|love|yay)\b/i.test(text)) return '✨'
+  return '💬'
+}
+
 /*
  * Message list and composer for one thread from useChatThread. The parent
  * draws the header (title, back button, block) around it.
@@ -212,7 +229,7 @@ export default function ChatThread({ thread, meId, placeholder = 'Write a messag
         role="log"
         aria-live="polite"
         aria-label="Messages"
-        className="flex-1 space-y-1 overflow-y-auto px-3 py-4 sm:px-4"
+        className="inbox-chat-log flex-1 space-y-1 overflow-y-auto px-3 py-4 sm:px-4"
       >
         {thread.hasMore && (
           <div className="pb-3 text-center">
@@ -242,12 +259,13 @@ export default function ChatThread({ thread, meId, placeholder = 'Write a messag
         {thread.messages.map((message, index) => {
           const mine = message.sender.id === meId
           const firstInRun = index === 0 || thread.messages[index - 1].sender.id !== message.sender.id
+          const lastInRun = index === thread.messages.length - 1 || thread.messages[index + 1].sender.id !== message.sender.id
 
           return (
             <div
               key={message.id}
-              className={`group flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'} ${
-                firstInRun && index > 0 ? 'pt-2.5' : ''
+              className={`group inbox-message-row flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'} ${
+                firstInRun && index > 0 ? 'pt-2.5' : 'inbox-message-row-continuation'
               }`}
             >
               {!mine && (
@@ -262,15 +280,27 @@ export default function ChatThread({ thread, meId, placeholder = 'Write a messag
                   </span>
                 )}
                 <div className="flex items-center gap-1.5">
-                  <div
-                    className={`whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
-                      mine ? 'rounded-br-md bg-mint text-bg' : 'rounded-bl-md bg-surface-3 text-text'
-                    }`}
-                  >
-                    {message.text}
-                    <div className={`mt-0.5 text-[10px] ${mine ? 'text-bg/70 [[data-theme=light]_&]:text-bg/90' : 'text-muted'}`}>
-                      <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
+                  <div className="relative">
+                    <div
+                      className={`inbox-message-bubble ${firstInRun ? 'inbox-message-first' : ''} ${
+                        lastInRun ? 'inbox-message-last' : ''
+                      } whitespace-pre-wrap break-words rounded-2xl px-3 py-1.5 text-sm leading-relaxed ${
+                        mine ? 'rounded-br-md bg-mint text-bg' : 'rounded-bl-md bg-mint-soft text-text'
+                      }`}
+                    >
+                      {message.text}
+                      <div className={`mt-0.5 text-[10px] ${mine ? 'text-bg/70 [[data-theme=light]_&]:text-bg/90' : 'text-muted'}`}>
+                        <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
+                      </div>
                     </div>
+                    {!mine && lastInRun && (
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute -right-1.5 -top-2 grid h-5 min-w-5 place-items-center rounded-full border border-mint/20 bg-surface px-1 text-[10px]"
+                      >
+                        {messageAccent(message.text)}
+                      </span>
+                    )}
                   </div>
                   {!mine && (
                     <button
@@ -297,13 +327,13 @@ export default function ChatThread({ thread, meId, placeholder = 'Write a messag
       </div>
 
       {thread.canSend ? (
-        <form onSubmit={submit} className="border-t border-border p-3">
+        <form onSubmit={submit} className="inbox-chat-composer border-t border-border p-3">
           {sendError && (
             <p role="alert" className="mb-2 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
               {sendError}
             </p>
           )}
-          <div className="flex items-center gap-2">
+          <div className="inbox-chat-composer-row flex items-center gap-2">
             <input
               ref={inputRef}
               value={draft}
@@ -312,13 +342,13 @@ export default function ChatThread({ thread, meId, placeholder = 'Write a messag
               placeholder={placeholder}
               aria-label="Message"
               enterKeyHint="send"
-              className="min-w-0 flex-1 rounded-full border border-border bg-surface px-4 py-2.5 text-sm text-text outline-none transition-colors placeholder:text-muted hover:border-text/20 focus:border-mint/60"
+              className="inbox-chat-input min-w-0 flex-1 rounded-full border border-border bg-surface px-4 py-2 text-[0.95rem] text-text outline-none transition-colors placeholder:text-muted hover:border-text/20 focus:border-mint/60"
             />
             <button
               type="submit"
               disabled={!draft.trim() || sending}
               aria-label="Send message"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-mint text-bg transition-[opacity,transform] duration-150 hover:bg-mint/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-2"
+              className="inbox-chat-send flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-mint text-bg transition-[opacity,transform] duration-150 hover:bg-mint/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-2"
             >
               <ArrowRightIcon className="h-4 w-4" />
             </button>

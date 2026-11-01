@@ -17,6 +17,7 @@ import {
   cleanupExpiredMessages,
   createChatTables,
   isBlockedBetween,
+  messagingRights,
   notifyDirectAccess,
   notifyEventClosed,
   notifyInBackground,
@@ -36,17 +37,99 @@ if (!jwtSecret || jwtSecret.length < 32) {
   throw new Error('Set JWT_SECRET to a random value of at least 32 characters in server/.env.')
 }
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'spontiii',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  timezone: 'Z',
-})
+async function createDatabasePool() {
+  const configuredHost = process.env.DB_HOST || '127.0.0.1'
+  const configuredPort = Number(process.env.DB_PORT || 3306)
+  const configuredUser = process.env.DB_USER || 'root'
+  const configuredPassword = process.env.DB_PASSWORD || ''
+  const databaseName = process.env.DB_NAME || 'spontiii'
+  const candidatePorts = [...new Set([
+    configuredPort,
+    3306,
+    3307,
+    3308,
+    3309,
+    3310,
+  ].filter((value) => Number.isInteger(value) && value > 0))]
+
+  let lastError = null
+
+  for (const port of candidatePorts) {
+    const pool = mysql.createPool({
+      host: configuredHost,
+      port,
+      user: configuredUser,
+      password: configuredPassword,
+      database: databaseName,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      timezone: 'Z',
+    })
+
+    try {
+      const connection = await pool.getConnection()
+      connection.release()
+      return pool
+    } catch (error) {
+      lastError = error
+      await pool.end().catch(() => {})
+    }
+  }
+
+  const detail = lastError?.message || 'Unknown MySQL error.'
+  throw new Error(
+    `Unable to connect to MySQL at ${configuredHost}:${candidatePorts.join(', ')}. Start MySQL/XAMPP or set DB_HOST/DB_PORT correctly. Details: ${detail}`,
+  )
+}
+
+async function ensureDatabaseExists() {
+  const configuredHost = process.env.DB_HOST || '127.0.0.1'
+  const configuredPort = Number(process.env.DB_PORT || 3306)
+  const configuredUser = process.env.DB_USER || 'root'
+  const configuredPassword = process.env.DB_PASSWORD || ''
+  const databaseName = process.env.DB_NAME || 'spontiii'
+  const candidatePorts = [...new Set([
+    configuredPort,
+    3306,
+    3307,
+    3308,
+    3309,
+    3310,
+  ].filter((value) => Number.isInteger(value) && value > 0))]
+
+  let lastError = null
+
+  for (const port of candidatePorts) {
+    const tempPool = mysql.createPool({
+      host: configuredHost,
+      port,
+      user: configuredUser,
+      password: configuredPassword,
+      database: undefined,
+      waitForConnections: true,
+      connectionLimit: 1,
+      queueLimit: 0,
+      timezone: 'Z',
+    })
+
+    try {
+      await tempPool.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName}\``)
+      await tempPool.end()
+      return
+    } catch (error) {
+      lastError = error
+      await tempPool.end().catch(() => {})
+    }
+  }
+
+  throw new Error(
+    `Unable to connect to MySQL to create the ${databaseName} database. Start MySQL/XAMPP or set DB_HOST/DB_PORT correctly. Details: ${lastError?.message || 'Unknown MySQL error.'}`,
+  )
+}
+
+await ensureDatabaseExists()
+const pool = await createDatabasePool()
 
 const cookieOptions = {
   httpOnly: true,

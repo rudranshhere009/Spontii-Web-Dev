@@ -216,6 +216,10 @@ a, button, div, nav {
   animation: rise-in 0.22s ease-out both;
 }
 
+.inbox-shell [class*="border-border"] {
+  border-color: color-mix(in srgb, var(--color-border) 65%, transparent);
+}
+
 .profile-reminder-backdrop {
   background: rgb(7 6 12 / 78%);
   animation: profile-reminder-fade 240ms ease-out both;
@@ -497,6 +501,564 @@ a, button, div, nav {
 .signup-verification-action:hover {
   box-shadow: 0 10px 28px rgb(62 235 174 / 24%);
   transform: translateY(-1px);
+}
+
+.inbox-shell {
+  color-scheme: light;
+  --color-bg: #f7f8fc;
+  --color-surface: #ffffff;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #f1f2fa;
+  --color-border: #e6e8f0;
+  --color-mint: #7479f8;
+  --color-mint-soft: rgb(116 121 248 / 11%);
+  --color-text: #273047;
+  --color-muted: #718096;
+  --color-muted-2: #98a2b3;
+  --inbox-accent-deep: #5c61df;
+  --inbox-accent-soft: rgb(116 121 248 / 9%);
+  --inbox-panel: #fbfbfe;
+  --inbox-coral: #ff8878;
+  --inbox-teal: #28b8a6;
+  color: var(--color-text);
+  font-size: 14px;
+  background:
+    radial-gradient(ellipse at 88% 4%, rgb(255 136 120 / 9%), transparent 28%),
+    radial-gradient(ellipse at 18% 92%, rgb(40 184 166 / 6%), transparent 32%),
+    radial-gradient(ellipse at 85% 5%, rgb(116 121 248 / 6%), transparent 34%),
+    var(--color-bg);
+}
+
+.inbox-sidebar-header {
+  background:
+    radial-gradient(ellipse at 100% 0%, rgb(255 136 120 / 12%), transparent 45%),
+    radial-gradient(ellipse at 0% 0%, rgb(116 121 248 / 8%), transparent 58%),
+    linear-gradient(145deg, #ffffff, #fbfaff 75%);
+}
+
+.inbox-shell nav[aria-label="Inbox navigation"] {
+  background:
+    radial-gradient(ellipse at 0% 0%, rgb(116 121 248 / 7%), transparent 48%),
+    var(--color-surface);
+}
+
+.inbox-shell .inbox-navigation-link.is-active {
+  background: linear-gradient(110deg, rgb(116 121 248 / 12%), rgb(255 136 120 / 8%));
+  color: var(--inbox-accent-deep);
+  box-shadow: inset 0 0 0 1px rgb(116 121 248 / 14%);
+}
+
+.inbox-nav-count {
+  display: inline-grid;
+  min-width: 1.2rem;
+  height: 1.2rem;
+  place-items: center;
+  border-radius: 999px;
+  background: rgb(116 121 248 / 12%);
+  color: var(--inbox-accent-deep);
+  font-size: 0.6875rem;
+  font-weight: 800;
+}
+
+.inbox-navigation-link:not(.is-active):hover {
+  color: var(--inbox-accent-deep);
+}
+
+.inbox-sidebar {
+  box-shadow: 4px 0 18px rgb(41 49 79 / 4%);
+}
+
+.inbox-sidebar-header {
+  padding-top: 0.625rem;
+  padding-bottom: 0.625rem;
+}
+
+.inbox-profile-avatar {
+  box-shadow: 0 4px 16px rgb(31 53 68 / 12%);
+}
+
+.inbox-tabs {
+  box-shadow: inset 0 1px rgb(255 255 255 / 80%);
+}
+
+.inbox-tab-active {
+  color: var(--inbox-accent-deep);
+  background: linear-gradient(110deg, rgb(116 121 248 / 15%), rgb(255 136 120 / 12%));
+  box-shadow: inset 0 0 0 1px rgb(116 121 248 / 12%);
+}
+
+.inbox-search:focus-within {
+  border-color: rgb(116 121 248 / 38%);
+  box-shadow: 0 0 0 3px rgb(116 121 248 / 8%);
+}
+
+.inbox-new-message {
+  border-color: rgb(116 121 248 / 24%);
+  background: linear-gradient(135deg, #ffffff, #f8f6ff);
+  box-shadow: 0 4px 14px rgb(31 53 68 / 8%);
+}
+
+.inbox-new-message:hover {
+  border-color: rgb(255 136 120 / 55%);
+  color: #df655f;
+  box-shadow: 0 5px 18px rgb(255 136 120 / 15%);
+}
+
+.inbox-empty-conversations {
+  background:
+    radial-gradient(ellipse at 100% 0%, rgb(255 136 120 / 10%), transparent 58%),
+    radial-gradient(ellipse at 0% 0%, rgb(116 121 248 / 7%), transparent 72%),
+    linear-gradient(145deg, #ffffff, var(--inbox-panel));
+}
+
+.inbox-conversation-row {
+  position: relative;
+  margin-block: 2px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+
+.inbox-conversation-row:hover {
+  background: linear-gradient(100deg, #f5f4ff, #fff8f6);
+  transform: translateX(1px);
+}
+
+.inbox-conversation-row.is-selected {
+  background: linear-gradient(110deg, rgb(116 121 248 / 13%), rgb(255 136 120 / 9%));
+  border-color: rgb(116 121 248 / 22%);
+  box-shadow: inset 3px 0 var(--color-mint), 0 3px 10px rgb(41 49 79 / 4%);
+}
+
+.inbox-conversation-list section[aria-labelledby="event-chats-heading"] h2 {
+  color: #d97765;
+}
+
+.inbox-conversation-list section[aria-labelledby="direct-messages-heading"] h2 {
+  color: #7479d8;
+}
+
+.inbox-conversation-row .bg-mint {
+  background: var(--inbox-coral);
+  color: #ffffff;
+}
+
+.inbox-conversation-row .inbox-avatar-unread {
+  background: var(--inbox-teal);
+}
+
+.inbox-avatar-frame img {
+  box-shadow: 0 3px 10px rgb(31 53 68 / 12%);
+}
+
+.inbox-conversation-row .inbox-avatar-frame,
+.inbox-conversation-row .inbox-avatar-frame img {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.inbox-conversation-row .text-text,
+.inbox-conversation-row .text-muted,
+.inbox-conversation-row .text-sm,
+.inbox-conversation-row .text-xs {
+  line-height: 1.3;
+}
+
+.inbox-thread-panel {
+  height: 100%;
+  margin: 0 6px 0 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  background:
+    radial-gradient(ellipse at 100% 0%, rgb(255 136 120 / 7%), transparent 38%),
+    radial-gradient(ellipse at 0% 100%, rgb(40 184 166 / 5%), transparent 35%),
+    radial-gradient(ellipse at 78% 0%, rgb(116 121 248 / 5%), transparent 44%),
+    #ffffff;
+  box-shadow: 0 8px 28px rgb(41 49 79 / 6%);
+}
+
+.inbox-thread-header {
+  min-height: 60px;
+  background:
+    linear-gradient(100deg, rgb(116 121 248 / 5%), transparent 48%),
+    radial-gradient(ellipse at 100% 0%, rgb(255 136 120 / 8%), transparent 38%),
+    rgb(255 255 255 / 96%);
+}
+
+.inbox-thread-header img {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.inbox-chat-log {
+  background-color: #fbfcff;
+  background-image:
+    radial-gradient(ellipse at 12% 10%, rgb(40 184 166 / 7%), transparent 34%),
+    radial-gradient(ellipse at 92% 84%, rgb(116 121 248 / 8%), transparent 38%),
+    radial-gradient(rgb(116 121 248 / 10%) 0.65px, transparent 0.65px);
+  background-size: auto, auto, 20px 20px;
+}
+
+.inbox-empty-icon {
+  position: relative;
+  background:
+    radial-gradient(circle at 35% 30%, rgb(116 121 248 / 12%), transparent 70%),
+    #f6f6ff;
+  box-shadow: 0 12px 30px rgb(41 49 79 / 8%), inset 0 0 0 1px rgb(116 121 248 / 12%);
+}
+
+.inbox-welcome {
+  background: #f7f8fc;
+}
+
+.inbox-find-people {
+  box-shadow: 0 8px 22px rgb(92 97 223 / 18%);
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.inbox-find-people:hover {
+  background-color: var(--inbox-accent-deep);
+  box-shadow: 0 10px 26px rgb(92 97 223 / 22%);
+}
+
+.inbox-message-bubble {
+  position: relative;
+  padding: 0.55rem 0.8rem;
+  border-radius: 1.1rem;
+  line-height: 1.45;
+  box-shadow: 0 4px 12px rgb(41 49 79 / 6%);
+  transition: box-shadow 160ms ease, transform 160ms ease;
+}
+
+.inbox-chat-log > .inbox-message-row + .inbox-message-row {
+  margin-top: 0.4rem;
+}
+
+.inbox-chat-log > .inbox-message-row-continuation {
+  margin-top: 0.1rem;
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-br-md:not(.inbox-message-first) {
+  border-top-right-radius: 0.45rem;
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-bl-md:not(.inbox-message-first) {
+  border-top-left-radius: 0.45rem;
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-br-md:not(.inbox-message-last) {
+  border-bottom-right-radius: 0.45rem;
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-bl-md:not(.inbox-message-last) {
+  border-bottom-left-radius: 0.45rem;
+}
+
+.inbox-message-bubble:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgb(41 49 79 / 9%);
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-br-md {
+  background: linear-gradient(135deg, #7169e8, #8b65df 68%, #b96dc6);
+  color: #ffffff;
+  border: 1px solid rgb(112 95 207 / 22%);
+  border-bottom-right-radius: 0.35rem;
+  box-shadow: 0 5px 14px rgb(116 105 232 / 21%);
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-br-md > div {
+  color: rgb(255 255 255 / 78%);
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-bl-md {
+  background: linear-gradient(135deg, #ffffff, #edfaf7);
+  color: #273d49;
+  border: 1px solid #dcefe9;
+  border-bottom-left-radius: 0.35rem;
+  box-shadow: 0 4px 12px rgb(40 130 120 / 8%);
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-bl-md > div {
+  color: #758b91;
+}
+
+.inbox-thread-panel .inbox-message-bubble.rounded-br-md,
+.inbox-thread-panel .inbox-message-bubble.rounded-bl-md {
+  border-radius: 1.1rem;
+}
+
+.inbox-thread-panel .inbox-chat-composer {
+  border-top: 0;
+  padding: 9px 16px 12px;
+  background: linear-gradient(90deg, rgb(116 121 248 / 4%), rgb(255 136 120 / 4%));
+}
+
+.inbox-thread-panel .inbox-chat-composer-row {
+  gap: 9px;
+}
+
+.inbox-thread-panel .inbox-chat-input {
+  min-height: 44px;
+  padding-top: 0.65rem;
+  padding-bottom: 0.65rem;
+  border-color: #e2e5f3;
+  background: linear-gradient(110deg, #ffffff, #fbfaff);
+  font-size: 0.95rem;
+  box-shadow: 0 2px 8px rgb(41 49 79 / 3%);
+}
+
+.inbox-thread-panel .inbox-chat-input:focus {
+  border-color: rgb(40 184 166 / 60%);
+  box-shadow: 0 0 0 3px rgb(40 184 166 / 10%);
+}
+
+.inbox-thread-panel .inbox-chat-send {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #7169e8, #8b65df 68%, #b96dc6);
+  color: #ffffff;
+  box-shadow: 0 5px 14px rgb(116 121 248 / 24%);
+}
+
+.inbox-thread-panel .inbox-chat-send:hover {
+  background: linear-gradient(135deg, #625ad7, #7954d2 68%, #a95ab7);
+}
+
+:root[data-theme="dark"] .inbox-shell {
+  color-scheme: dark;
+  --color-bg: #0c1421;
+  --color-surface: #101a29;
+  --color-surface-2: #111d2d;
+  --color-surface-3: #1b293b;
+  --color-border: #26364a;
+  --color-mint: #756cff;
+  --color-mint-soft: rgb(117 108 255 / 14%);
+  --color-text: #edf2fb;
+  --color-muted: #9aa9bd;
+  --color-muted-2: #77869b;
+  --inbox-accent-deep: #918aff;
+  --inbox-accent-soft: rgb(117 108 255 / 12%);
+  --inbox-panel: #111d2d;
+  --inbox-coral: #ff8878;
+  --inbox-teal: #35c5a5;
+  background:
+    radial-gradient(ellipse at 86% 4%, rgb(111 91 255 / 10%), transparent 34%),
+    radial-gradient(ellipse at 10% 96%, rgb(40 184 166 / 5%), transparent 32%),
+    #0c1421;
+}
+
+:root[data-theme="dark"] .inbox-sidebar-header {
+  background:
+    radial-gradient(ellipse at 100% 0%, rgb(255 136 120 / 8%), transparent 45%),
+    radial-gradient(ellipse at 0% 0%, rgb(116 121 248 / 12%), transparent 58%),
+    #111d2d;
+}
+
+:root[data-theme="dark"] .inbox-shell nav[aria-label="Inbox navigation"] {
+  background:
+    radial-gradient(ellipse at 0% 0%, rgb(116 121 248 / 8%), transparent 48%),
+    #0e1826;
+}
+
+:root[data-theme="dark"] .inbox-shell .inbox-navigation-link.is-active {
+  background: linear-gradient(110deg, rgb(116 121 248 / 24%), rgb(255 136 120 / 10%));
+  color: #c3beff;
+  box-shadow: inset 0 0 0 1px rgb(143 135 255 / 22%);
+}
+
+:root[data-theme="dark"] .inbox-nav-count {
+  background: linear-gradient(135deg, #655df0, #8b62dc);
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .inbox-navigation-link:not(.is-active):hover {
+  color: #c3beff;
+}
+
+:root[data-theme="dark"] .inbox-sidebar {
+  box-shadow: 4px 0 22px rgb(0 0 0 / 16%);
+}
+
+:root[data-theme="dark"] .inbox-tabs {
+  background-color: #0d1725;
+  box-shadow: inset 0 1px rgb(255 255 255 / 4%);
+}
+
+:root[data-theme="dark"] .inbox-tab-active {
+  color: #f3f1ff;
+  background: linear-gradient(110deg, #5f58df, #7955cc);
+  box-shadow: inset 0 0 0 1px rgb(194 185 255 / 16%), 0 3px 10px rgb(83 74 190 / 24%);
+}
+
+:root[data-theme="dark"] .inbox-search:focus-within {
+  border-color: rgb(143 135 255 / 52%);
+  box-shadow: 0 0 0 3px rgb(116 121 248 / 14%);
+}
+
+:root[data-theme="dark"] .inbox-new-message {
+  border-color: rgb(143 135 255 / 30%);
+  background: linear-gradient(135deg, #1a2639, #211f3a);
+  color: #c3beff;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 14%);
+}
+
+:root[data-theme="dark"] .inbox-new-message:hover {
+  border-color: rgb(255 136 120 / 58%);
+  background: linear-gradient(135deg, #252741, #38283f);
+  color: #ffb1a3;
+  box-shadow: 0 5px 18px rgb(255 136 120 / 12%);
+}
+
+:root[data-theme="dark"] .inbox-empty-conversations {
+  background:
+    radial-gradient(ellipse at 100% 0%, rgb(255 136 120 / 8%), transparent 58%),
+    radial-gradient(ellipse at 0% 0%, rgb(116 121 248 / 10%), transparent 72%),
+    linear-gradient(145deg, #172337, #111b2b);
+}
+
+:root[data-theme="dark"] .inbox-conversation-row:hover {
+  background: linear-gradient(100deg, #1a263a, #252437);
+}
+
+:root[data-theme="dark"] .inbox-conversation-row.is-selected {
+  background: linear-gradient(110deg, rgb(116 121 248 / 22%), rgb(255 136 120 / 8%));
+  border-color: rgb(143 135 255 / 30%);
+  box-shadow: inset 3px 0 #8e87ff, 0 3px 12px rgb(0 0 0 / 14%);
+}
+
+:root[data-theme="dark"] .inbox-conversation-list section[aria-labelledby="event-chats-heading"] h2 {
+  color: #ffab91;
+}
+
+:root[data-theme="dark"] .inbox-conversation-list section[aria-labelledby="direct-messages-heading"] h2 {
+  color: #a9a4ff;
+}
+
+:root[data-theme="dark"] .inbox-conversation-row .bg-mint {
+  background: #ff8878;
+  color: #241a27;
+}
+
+:root[data-theme="dark"] .inbox-conversation-row .inbox-avatar-unread {
+  background: #35c5a5;
+}
+
+:root[data-theme="dark"] .inbox-avatar-frame img {
+  box-shadow: 0 3px 10px rgb(0 0 0 / 28%);
+}
+
+:root[data-theme="dark"] .inbox-thread-panel {
+  border-color: #26364a;
+  background:
+    radial-gradient(ellipse at 100% 0%, rgb(139 91 255 / 10%), transparent 38%),
+    radial-gradient(ellipse at 0% 100%, rgb(40 184 166 / 5%), transparent 35%),
+    #0e1725;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 24%);
+}
+
+:root[data-theme="dark"] .inbox-thread-header {
+  background:
+    linear-gradient(100deg, rgb(116 121 248 / 9%), transparent 48%),
+    radial-gradient(ellipse at 100% 0%, rgb(255 136 120 / 7%), transparent 38%),
+    #111b2a;
+}
+
+:root[data-theme="dark"] .inbox-chat-log {
+  background-color: #0d1725;
+  background-image:
+    radial-gradient(ellipse at 12% 10%, rgb(40 184 166 / 7%), transparent 34%),
+    radial-gradient(ellipse at 92% 84%, rgb(116 121 248 / 9%), transparent 38%),
+    radial-gradient(rgb(147 158 205 / 9%) 0.65px, transparent 0.65px);
+}
+
+:root[data-theme="dark"] .inbox-empty-icon {
+  background:
+    radial-gradient(circle at 35% 30%, rgb(116 121 248 / 22%), transparent 70%),
+    #1b263b;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 22%), inset 0 0 0 1px rgb(143 135 255 / 20%);
+}
+
+:root[data-theme="dark"] .inbox-welcome {
+  background: #0d1725;
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-message-bubble.rounded-br-md {
+  background: linear-gradient(135deg, #5f58e8, #7055df 68%, #9857c2);
+  color: #ffffff;
+  border-color: rgb(173 160 255 / 24%);
+  box-shadow: 0 5px 14px rgb(72 62 185 / 28%);
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-message-bubble.rounded-br-md > div {
+  color: rgb(255 255 255 / 76%);
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-message-bubble.rounded-bl-md {
+  background: linear-gradient(135deg, #1c2a3c, #1d343b);
+  color: #e8f0f8;
+  border-color: #2b4650;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-message-bubble.rounded-bl-md > div {
+  color: #9db8bc;
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-chat-composer {
+  background: linear-gradient(90deg, rgb(116 121 248 / 8%), rgb(255 136 120 / 5%));
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-chat-input {
+  border-color: #304158;
+  background: linear-gradient(110deg, #172336, #1c2136);
+  color: #edf2fb;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 16%);
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-chat-input::placeholder {
+  color: #93a2b8;
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-chat-input:focus {
+  border-color: rgb(143 135 255 / 64%);
+  box-shadow: 0 0 0 3px rgb(116 121 248 / 17%);
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-chat-send {
+  background: linear-gradient(135deg, #655df0, #7955dc 68%, #a856c6);
+  color: #ffffff;
+  box-shadow: 0 5px 14px rgb(85 72 218 / 32%);
+}
+
+:root[data-theme="dark"] .inbox-thread-panel .inbox-chat-send:hover {
+  background: linear-gradient(135deg, #7770ff, #8b64ed 68%, #bc64d8);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-message-bubble {
+    transition: none;
+  }
+
+  .inbox-message-bubble:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .inbox-thread-panel {
+    height: 100%;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .inbox-thread-panel .inbox-chat-composer {
+    padding: 10px 12px 14px;
+  }
 }
 
 @keyframes signup-verification-fade {

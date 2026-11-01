@@ -91,6 +91,10 @@ export default function Notifications() {
       if (notification?.id) showToast(notification)
       loadNotifications()
     }
+    function onMessageReceived(event) {
+      const message = event.detail
+      if (message?.id) showToast(message)
+    }
     function onNotificationRemoved(event) {
       const id = String(event.detail?.id ?? '')
       setNotifications((previous) =>
@@ -103,11 +107,13 @@ export default function Notifications() {
     }
 
     window.addEventListener('spontii:notification-created', onNotificationCreated)
+    window.addEventListener('spontii:message-received', onMessageReceived)
     window.addEventListener('spontii:notification-removed', onNotificationRemoved)
     return () => {
       window.clearTimeout(initialLoad)
       window.clearInterval(interval)
       window.removeEventListener('spontii:notification-created', onNotificationCreated)
+      window.removeEventListener('spontii:message-received', onMessageReceived)
       window.removeEventListener('spontii:notification-removed', onNotificationRemoved)
       for (const timer of timeoutHandles.values()) window.clearTimeout(timer)
       timeoutHandles.clear()
@@ -187,6 +193,13 @@ export default function Notifications() {
   }
 
   async function openNotification(item) {
+    if (item.type === 'chat_message') {
+      dismissToast(item.id)
+      setOpen(false)
+      if (item.route) navigate(item.route)
+      return
+    }
+
     try {
       await apiRequest(`/notifications/${item.id}/read`, { method: 'PATCH' })
       setNotifications((previous) =>
@@ -383,6 +396,7 @@ export default function Notifications() {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-extrabold text-mint">{item.title}</p>
+                {item.message && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">{item.message}</p>}
                 <div className="mt-2 flex justify-end gap-2">
                   {item.route && (
                     <button
