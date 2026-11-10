@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -36,6 +36,27 @@ const FIELD =
 const LABEL = 'mb-1.5 block text-xs font-semibold text-muted'
 const STATE_NAMES = INDIA_STATES.map(({ name }) => name)
 
+function useOutsideDismiss(ref, open, close) {
+  useEffect(() => {
+    if (!open) return undefined
+
+    function handlePointerDown(event) {
+      if (!ref.current?.contains(event.target)) close()
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') close()
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [close, open, ref])
+}
+
 function dateTimeParts(value) {
   const [date = '', time = ''] = value.split('T')
   return { date, time }
@@ -57,6 +78,9 @@ function formatDate(date) {
 
 function DateField({ id, label, value, min, onChange }) {
   const [open, setOpen] = useState(false)
+  const containerRef = useRef(null)
+  const close = useCallback(() => setOpen(false), [])
+  useOutsideDismiss(containerRef, open, close)
   const selectedDate = value ? parseDate(value) : new Date()
   const [visibleMonth, setVisibleMonth] = useState(
     () => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1),
@@ -76,7 +100,7 @@ function DateField({ id, label, value, min, onChange }) {
   }).format(visibleMonth)
 
   return (
-    <div className="relative min-w-0">
+    <div ref={containerRef} className="relative min-w-0">
       <span className="sr-only" id={`${id}-label`}>{label}</span>
       <button
         id={id}
@@ -210,10 +234,13 @@ function TimeField({ id, label, value, onChange }) {
 
 function SelectField({ id, label, value, options, onChange }) {
   const [open, setOpen] = useState(false)
+  const containerRef = useRef(null)
+  const close = useCallback(() => setOpen(false), [])
+  useOutsideDismiss(containerRef, open, close)
   const selected = options.find((option) => option.value === value)
 
   return (
-    <div className="relative">
+    <div ref={containerRef} className="relative">
       <label className={LABEL} htmlFor={id}>{label}</label>
       <button
         id={id}
@@ -221,11 +248,7 @@ function SelectField({ id, label, value, options, onChange }) {
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((previous) => !previous)}
-        onBlur={(event) => {
-          if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) {
-            setOpen(false)
-          }
-        }}
+        aria-controls={`${id}-options`}
         className={`${FIELD} flex items-center justify-between gap-3 text-left hover:border-text/25`}
       >
         <span className="truncate">{selected?.label || value}</span>
@@ -233,6 +256,7 @@ function SelectField({ id, label, value, options, onChange }) {
       </button>
       {open && (
         <ul
+          id={`${id}-options`}
           role="listbox"
           aria-labelledby={id}
           className="absolute inset-x-0 top-full z-30 mt-1.5 max-h-60 overflow-y-auto rounded-xl border border-border bg-surface-2 p-1.5 shadow-xl"
@@ -271,13 +295,19 @@ function SearchableField({
 }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
+  const containerRef = useRef(null)
   const inputRef = useRef(null)
+  const close = useCallback(() => {
+    setOpen(false)
+    setQuery('')
+  }, [])
+  useOutsideDismiss(containerRef, open, close)
   const filtered = options.filter((option) =>
     option.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
   )
 
   return (
-    <div className="relative">
+    <div ref={containerRef} className="relative">
       <label className={LABEL} htmlFor={id}>{label}</label>
       <div className="relative">
         <input
@@ -310,12 +340,6 @@ function SearchableField({
               setOpen(false)
               setQuery('')
             }
-          }}
-          onBlur={() => {
-            window.setTimeout(() => {
-              setOpen(false)
-              setQuery('')
-            }, 100)
           }}
         />
         <ChevronDownIcon className={`pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -902,7 +926,7 @@ export default function CreatePlan() {
   const duration = formatDuration(form.startsAt, form.endsAt)
 
   return (
-    <div className="wide-screen-container mx-auto w-full px-4 py-5 sm:px-6 lg:px-8 2xl:px-10">
+    <div className="event-create-page wide-screen-container mx-auto w-full px-4 py-5 sm:px-6 lg:px-8 2xl:px-10">
       <button
         type="button"
         onClick={() => (window.history.state?.idx ?? 0) > 0 ? navigate(-1) : navigate('/')}
@@ -912,7 +936,11 @@ export default function CreatePlan() {
         Back
       </button>
 
-      <header className="mb-5">
+      <header className="event-create-header mb-5">
+        <div className="event-create-eyebrow">
+          <span className="event-create-eyebrow-dot" />
+          EVENT STUDIO <span aria-hidden="true">/</span> MAKE SOMETHING HAPPEN
+        </div>
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <h1 className="text-2xl font-extrabold tracking-tight text-text sm:text-3xl">
           Create an event
@@ -923,7 +951,7 @@ export default function CreatePlan() {
         </div>
       </header>
 
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-mint/20 bg-mint/5 px-4 py-3">
+      <div className="event-create-points mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-mint/20 bg-mint/5 px-4 py-3">
         <div>
           <p className="text-xs font-bold text-text">Spontii points unlock activity creation</p>
           <p className="mt-1 text-xs text-muted">
@@ -931,25 +959,25 @@ export default function CreatePlan() {
           </p>
           {pointsError && <p role="status" className="mt-1 text-[11px] text-muted">{pointsError}</p>}
         </div>
-        <div className="rounded-xl border border-mint/25 bg-surface px-3 py-2 text-right">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Your balance</p>
-          <p className="text-sm font-extrabold text-mint">
+        <div className="event-points-balance rounded-xl border border-mint/25 bg-surface px-4 py-3 text-right">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Your balance</p>
+          <p className="text-base font-extrabold text-mint sm:text-lg">
             {points ? `${points.balance} points` : 'Loading…'}
           </p>
           {points && (
-            <p className="flex items-center justify-end gap-1 text-[10px] text-muted">
+            <p className="flex items-center justify-end gap-1 text-[11px] text-muted sm:text-xs">
               <span>{points.nextActivityCost} needed · Activity</span>
-              <StarIcon className="h-3 w-3 fill-current text-mint" />
+              <StarIcon className="h-3.5 w-3.5 fill-current text-mint" />
               <span>{points.activitiesCreated + 1}</span>
             </p>
           )}
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4 text-[13px]">
+      <form onSubmit={handleSubmit} className="event-create-form space-y-4 text-[13px]">
         <section className="grid gap-4 rounded-2xl border border-border bg-surface p-4 sm:grid-cols-2 sm:p-5">
           <div className="sm:col-span-2">
-            <label className={LABEL} htmlFor="event-title">Event name</label>
+            <label className={LABEL} htmlFor="event-title">Give your plan a name</label>
             <input
               id="event-title"
               className={FIELD}
@@ -959,6 +987,10 @@ export default function CreatePlan() {
               maxLength={120}
               required
             />
+            <div className="event-title-meta">
+              <span>A catchy title gets the right people curious.</span>
+              <span className={form.title.length >= 110 ? 'is-near-limit' : ''}>{form.title.length}/120</span>
+            </div>
           </div>
           <div>
             <SelectField
@@ -1432,7 +1464,7 @@ export default function CreatePlan() {
         <button
           type="submit"
           disabled={submitting || locationBusy || BANNER_OPTIONS.length === 0}
-          className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-mint px-5 text-sm font-bold text-bg transition-colors hover:bg-mint/90 disabled:cursor-wait disabled:opacity-60 sm:w-auto sm:min-w-56"
+          className="event-publish-button flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-mint px-5 text-sm font-bold text-bg transition-colors hover:bg-mint/90 disabled:cursor-wait disabled:opacity-60 sm:w-auto sm:min-w-56"
         >
           {submitting ? 'Publishing event…' : 'Publish event'}
           {!submitting && <ArrowRightIcon className="h-4 w-4" />}

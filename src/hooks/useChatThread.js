@@ -109,6 +109,24 @@ export function useChatThread(kind, threadId) {
       : current)
   })
 
+  useChatEvent('message:deleted-for-me', (payload) => {
+    if (!isThisThread(payload)) return
+    setThread((current) => ({
+      ...current,
+      messages: current.messages.filter((message) => message.id !== String(payload.messageId)),
+    }))
+  })
+
+  useChatEvent('message:deleted-for-everyone', (payload) => {
+    if (!isThisThread(payload)) return
+    setThread((current) => ({
+      ...current,
+      messages: current.messages.map((message) => message.id === String(payload.messageId)
+        ? { ...message, text: '', attachments: [], deletedForEveryone: true }
+        : message),
+    }))
+  })
+
   useChatEvent('thread:access', (payload) => {
     if (!isThisThread(payload)) return
     if (payload.reason === 'removed') {
@@ -164,9 +182,15 @@ export function useChatThread(kind, threadId) {
     return () => document.removeEventListener('visibilitychange', markRead)
   }, [canMarkRead, lastMessage, readPath, refreshUnread, user?.id])
 
-  async function send(text) {
+  async function send(text, files = []) {
     try {
-      const { message } = await apiRequest(messagesPath, { method: 'POST', body: { text } })
+      let body = { text }
+      if (files.length) {
+        body = new FormData()
+        body.append('text', text)
+        files.forEach((file) => body.append('files', file))
+      }
+      const { message } = await apiRequest(messagesPath, { method: 'POST', body })
       setThread((current) => ({ ...current, messages: mergeMessages(current.messages, [message]) }))
       return { ok: true }
     } catch (error) {
@@ -175,6 +199,34 @@ export function useChatThread(kind, threadId) {
           (kind === 'event' ? (error.status === 404 ? 'ended' : 'removed') : 'unavailable')
         setThread((current) => ({ ...current, canSend: false, reason }))
       }
+      return { ok: false, message: error.message }
+    }
+  }
+
+  async function deleteMessage(messageId, action, deleteAt) {
+    const path = kind === 'event'
+      ? `/activities/${threadId}/chat/${messageId}`
+      : `/dm/${threadId}/messages/${messageId}`
+    try {
+      await apiRequest(path, {
+        method: 'DELETE',
+        body: { action, ...(deleteAt ? { deleteAt } : {}) },
+      })
+      if (action === 'for_me') {
+        setThread((current) => ({
+          ...current,
+          messages: current.messages.filter((message) => message.id !== String(messageId)),
+        }))
+      } else if (action === 'for_everyone') {
+        setThread((current) => ({
+          ...current,
+          messages: current.messages.map((message) => message.id === String(messageId)
+            ? { ...message, text: '', attachments: [], deletedForEveryone: true }
+            : message),
+        }))
+      }
+      return { ok: true }
+    } catch (error) {
       return { ok: false, message: error.message }
     }
   }
@@ -197,5 +249,5 @@ export function useChatThread(kind, threadId) {
     }
   }
 
-  return { ...thread, kind, threadId, loadingOlder, send, loadOlder, reload: load }
+  return { ...thread, kind, threadId, loadingOlder, send, deleteMessage, loadOlder, reload: load }
 }

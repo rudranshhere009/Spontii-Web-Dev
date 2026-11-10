@@ -16,17 +16,37 @@ import {
   blockStatus,
   cleanupExpiredMessages,
   createChatTables,
+  disconnectUser,
+  emitToUsers,
+  getSocketStats,
   isBlockedBetween,
+  messagingRights,
   notifyDirectAccess,
   notifyEventClosed,
   notifyInBackground,
   registerChatRoutes,
 } from './chat.js'
-import { sendOtpEmail } from './mail.js'
+import { assertMailConfig, sendOtpEmail } from './mail.js'
+import { registerAdminRoutes } from './admin/index.js'
+import { createAdminTables } from './admin/schema.js'
+import { seedSuperAdmin } from './admin/seed.js'
+import {
+  eventRequiredPoints,
+  getSetting,
+  loadSettings,
+  publicAppConfig,
+  startSettingsRefresh,
+} from './admin/settings.js'
+import { countDaily } from './metrics.js'
 
 dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)) })
+assertMailConfig()
 
 const app = express()
+const trustProxy = process.env.TRUST_PROXY
+if (trustProxy && trustProxy !== '0') {
+  app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy)
+}
 const port = Number(process.env.PORT || 3001)
 const jwtSecret = process.env.JWT_SECRET
 const isProduction = process.env.NODE_ENV === 'production'
@@ -36,17 +56,99 @@ if (!jwtSecret || jwtSecret.length < 32) {
   throw new Error('Set JWT_SECRET to a random value of at least 32 characters in server/.env.')
 }
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'spontiii',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  timezone: 'Z',
-})
+async function createDatabasePool() {
+  const configuredHost = process.env.DB_HOST || '127.0.0.1'
+  const configuredPort = Number(process.env.DB_PORT || 3306)
+  const configuredUser = process.env.DB_USER || 'root'
+  const configuredPassword = process.env.DB_PASSWORD || ''
+  const databaseName = process.env.DB_NAME || 'spontiii'
+  const candidatePorts = [...new Set([
+    configuredPort,
+    3306,
+    3307,
+    3308,
+    3309,
+    3310,
+  ].filter((value) => Number.isInteger(value) && value > 0))]
+
+  let lastError = null
+
+  for (const port of candidatePorts) {
+    const pool = mysql.createPool({
+      host: configuredHost,
+      port,
+      user: configuredUser,
+      password: configuredPassword,
+      database: databaseName,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      timezone: 'Z',
+    })
+
+    try {
+      const connection = await pool.getConnection()
+      connection.release()
+      return pool
+    } catch (error) {
+      lastError = error
+      await pool.end().catch(() => {})
+    }
+  }
+
+  const detail = lastError?.message || 'Unknown MySQL error.'
+  throw new Error(
+    `Unable to connect to MySQL at ${configuredHost}:${candidatePorts.join(', ')}. Start MySQL/XAMPP or set DB_HOST/DB_PORT correctly. Details: ${detail}`,
+  )
+}
+
+async function ensureDatabaseExists() {
+  const configuredHost = process.env.DB_HOST || '127.0.0.1'
+  const configuredPort = Number(process.env.DB_PORT || 3306)
+  const configuredUser = process.env.DB_USER || 'root'
+  const configuredPassword = process.env.DB_PASSWORD || ''
+  const databaseName = process.env.DB_NAME || 'spontiii'
+  const candidatePorts = [...new Set([
+    configuredPort,
+    3306,
+    3307,
+    3308,
+    3309,
+    3310,
+  ].filter((value) => Number.isInteger(value) && value > 0))]
+
+  let lastError = null
+
+  for (const port of candidatePorts) {
+    const tempPool = mysql.createPool({
+      host: configuredHost,
+      port,
+      user: configuredUser,
+      password: configuredPassword,
+      database: undefined,
+      waitForConnections: true,
+      connectionLimit: 1,
+      queueLimit: 0,
+      timezone: 'Z',
+    })
+
+    try {
+      await tempPool.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName}\``)
+      await tempPool.end()
+      return
+    } catch (error) {
+      lastError = error
+      await tempPool.end().catch(() => {})
+    }
+  }
+
+  throw new Error(
+    `Unable to connect to MySQL to create the ${databaseName} database. Start MySQL/XAMPP or set DB_HOST/DB_PORT correctly. Details: ${lastError?.message || 'Unknown MySQL error.'}`,
+  )
+}
+
+await ensureDatabaseExists()
+const pool = await createDatabasePool()
 
 const cookieOptions = {
   httpOnly: true,
@@ -86,7 +188,8 @@ function isAllowedOrigin(origin) {
   return !isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
 }
 
-app.use(helmet())
+/* same-site lets a separately hosted frontend show profile photos and event media. */
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'same-site' } }))
 app.use(express.json({ limit: '10kb' }))
 app.use(cookieParser())
 
@@ -102,6 +205,24 @@ app.use((request, response, next) => {
   const origin = request.get('origin')
   if (isAllowedOrigin(origin) || (!origin && !isProduction)) return next()
   return response.status(403).json({ message: 'This request origin is not allowed.' })
+})
+
+/* While maintenance is on, the user API answers 503; the admin portal and the app's config keep working. */
+const MAINTENANCE_OPEN_PATHS = ['/api/health', '/api/app-config', '/api/auth/me', '/api/auth/logout']
+app.use((request, response, next) => {
+  const maintenance = getSetting('maintenance')
+  if (!maintenance.enabled || !request.path.startsWith('/api/') ||
+      request.path.startsWith('/api/admin/') || MAINTENANCE_OPEN_PATHS.includes(request.path)) {
+    return next()
+  }
+  return response.status(503).json({
+    code: 'MAINTENANCE',
+    message: maintenance.message || 'Spontii is down for maintenance. Please check back soon.',
+  })
+})
+
+app.get('/api/app-config', (_request, response) => {
+  response.json(publicAppConfig())
 })
 
 const authLimiter = rateLimit({
@@ -129,6 +250,7 @@ function publicUser(row) {
     avatar: row.profile_photo_mime ? `/api/profile/photo?v=${Date.now()}` : null,
     profileCompletion,
     spontiiScore: Number(row.spontii_score),
+    spontiiVerified: Boolean(row.spontii_verified),
     createdAt: row.created_at,
   }
 }
@@ -145,6 +267,7 @@ function publicPerson(row) {
       ? `/api/people/${row.client_id}/photo?v=${Date.now()}`
       : null,
     score: Number(row.spontii_score || 0),
+    spontiiVerified: Boolean(row.spontii_verified),
   }
 }
 
@@ -177,15 +300,16 @@ function selectProfile(clientId) {
   return pool.execute(
     `SELECT client_id, full_name, phone_number, email, spontiii_id,
             profile_city, profile_tagline, profile_bio, profile_tags,
-            profile_photo_mime, spontii_score, created_at
+            profile_photo_mime, spontii_score, spontii_verified, created_at
      FROM clients WHERE client_id = ? LIMIT 1`,
     [clientId],
   )
 }
 
-function setSessionCookie(response, clientId) {
+/* `ver` must match clients.session_version; admins bump it to sign a user out everywhere. */
+function setSessionCookie(response, clientId, sessionVersion = 0) {
   const token = jwt.sign(
-    { sub: String(clientId) },
+    { sub: String(clientId), ver: Number(sessionVersion) },
     jwtSecret,
     { expiresIn: '7d' },
   )
@@ -229,31 +353,115 @@ function verifySessionToken(token) {
     const payload = jwt.verify(token, jwtSecret)
     const clientId = Number(payload.sub)
     if (!Number.isSafeInteger(clientId) || clientId <= 0) return null
-    return { clientId, expiresAt: payload.exp * 1000 }
+    /* Tokens issued before session versions existed carry no `ver`; they match version 0. */
+    return { clientId, expiresAt: payload.exp * 1000, version: Number(payload.ver ?? 0) }
   } catch {
     return null
   }
 }
 
-function requireSession(request, response, next) {
+const ACCOUNT_STATE_COLUMNS = `account_status, status_reason, session_version,
+  UNIX_TIMESTAMP(suspended_until) AS suspended_until_unix,
+  suspended_until IS NOT NULL AND suspended_until <= NOW() AS suspension_over`
+
+/* Why an account may not be used right now, or null. Suspensions end by themselves. */
+function accountBlock(row) {
+  if (row.account_status === 'banned') {
+    return {
+      code: 'ACCOUNT_BANNED',
+      message: 'This account has been banned for breaking the Spontii community guidelines.',
+      reason: row.status_reason || null,
+    }
+  }
+  if (row.account_status === 'suspended' && !row.suspension_over) {
+    const until = row.suspended_until_unix ? new Date(Number(row.suspended_until_unix) * 1000) : null
+    return {
+      code: 'ACCOUNT_SUSPENDED',
+      message: until
+        ? `This account is suspended until ${until.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' })}.`
+        : 'This account is suspended.',
+      reason: row.status_reason || null,
+      until: until?.toISOString() ?? null,
+    }
+  }
+  return null
+}
+
+/* Records activity at most every 5 minutes per user (last seen + daily active users). */
+function recordActivity(clientId) {
+  return Promise.all([
+    pool.execute('UPDATE clients SET last_seen_at = NOW() WHERE client_id = ?', [clientId]),
+    pool.execute('INSERT IGNORE INTO client_activity_days (client_id, activity_day) VALUES (?, CURRENT_DATE())', [clientId]),
+  ])
+}
+
+/*
+ * Verifies the JWT, then checks the account: it must exist, not be suspended
+ * or banned, and the token's version must match (admins bump it to sign a
+ * user out everywhere). Returns { clientId, expiresAt } or { code, message }.
+ */
+async function resolveSession(token) {
+  const session = verifySessionToken(token)
+  if (!session) return { code: 'SESSION_EXPIRED', message: 'Your session has expired. Please log in again.' }
+
+  const [rows] = await pool.execute(
+    `SELECT ${ACCOUNT_STATE_COLUMNS},
+            last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL 5 MINUTE AS seen_stale
+     FROM clients WHERE client_id = ? LIMIT 1`,
+    [session.clientId],
+  )
+  const account = rows[0]
+  const revoked = { code: 'SESSION_REVOKED', message: 'You were signed out. Please log in again.' }
+  if (!account) return revoked
+  /* Checked before the version so a suspended user is told why, not just signed out. */
+  const block = accountBlock(account)
+  if (block) return block
+  if (Number(account.session_version) !== session.version) return revoked
+  if (account.account_status === 'suspended') {
+    await pool.execute(
+      `UPDATE clients SET account_status = 'active', status_reason = NULL, suspended_until = NULL
+       WHERE client_id = ? AND account_status = 'suspended' AND suspended_until <= NOW()`,
+      [session.clientId],
+    )
+  }
+  if (account.seen_stale) {
+    recordActivity(session.clientId).catch((error) => console.error('Failed to record activity:', error))
+  }
+  return { clientId: session.clientId, expiresAt: session.expiresAt }
+}
+
+async function requireSession(request, response, next) {
   const token = request.cookies[cookieName]
   if (!token) {
     return response.status(401).json({ message: 'Please log in.' })
   }
 
-  const session = verifySessionToken(token)
-  if (!session) {
+  const session = await resolveSession(token)
+  if (!session.clientId) {
     response.clearCookie(cookieName, cookieOptions)
-    return response.status(401).json({ message: 'Your session has expired. Please log in again.' })
+    return response.status(401).json(session)
   }
   request.clientId = session.clientId
   return next()
 }
 
-function optionalSession(request, _response, next) {
-  request.clientId = verifySessionToken(request.cookies[cookieName])?.clientId ?? null
+async function optionalSession(request, _response, next) {
+  const token = request.cookies[cookieName]
+  request.clientId = token ? (await resolveSession(token)).clientId ?? null : null
   next()
 }
+
+/* Login history for the admin portal; best effort, never blocks a login. */
+function recordLogin(request, clientId, method) {
+  pool.execute(
+    `INSERT INTO client_login_history (client_id, method, ip, user_agent)
+     VALUES (?, ?, ?, ?)`,
+    [clientId, method, (request.ip || '').replace(/^::ffff:/, ''), request.get('user-agent')?.slice(0, 255) ?? null],
+  ).catch((error) => console.error('Failed to record login:', error))
+}
+
+/* SQL condition: the client row aliased `alias` belongs to an active (not suspended or banned) account. */
+const activeClient = (alias) => `${alias}.account_status = 'active'`
 
 function activityResponse(row, isHost = false, media = [], requestStatus = null) {
   const start = new Date(row.starts_at)
@@ -291,8 +499,10 @@ function activityResponse(row, isHost = false, media = [], requestStatus = null)
       city: row.host_city || row.city,
       avatar: null,
       score: Number(row.spontii_score || 0),
+      /* Set by the Spontii team in the admin portal; the cards already show a badge for it. */
+      verified: Boolean(row.host_verified),
     },
-    when: `${date} · ${time}`,
+    when: `${date} Â· ${time}`,
     date,
     time,
     startsAt: start.toISOString(),
@@ -347,7 +557,7 @@ const ACTIVITY_SELECT = `
          a.food_available, a.food_preference, a.beverages_available,
          a.drinks_available, a.attendee_preference, a.experience_level,
          a.preferences, a.event_tags, a.banner_image, a.status, c.full_name AS host_name,
-         c.profile_city AS host_city, c.spontii_score,
+         c.profile_city AS host_city, c.spontii_score, c.spontii_verified AS host_verified,
          (SELECT COUNT(*) FROM activity_join_requests jr
           WHERE jr.activity_id = a.activity_id AND jr.status = 'approved') AS approved_attendee_count,
          (SELECT COUNT(*) FROM activity_join_requests jr
@@ -359,20 +569,85 @@ function toMysqlDateTime(value) {
   return value.toISOString().slice(0, 19).replace('T', ' ')
 }
 
-async function expireActivities() {
-  await pool.execute(
-    `UPDATE activities SET status = 'completed'
-     WHERE status = 'active' AND ends_at <= UTC_TIMESTAMP()`,
-  )
-  await pool.execute(
-    `UPDATE notifications n
-     JOIN activities a
-       ON n.dedupe_key = CONCAT('hosted-event:', a.public_id)
-     SET n.dismissed_at = COALESCE(n.dismissed_at, NOW())
-     WHERE n.type = 'hosted_event' AND a.ends_at <= UTC_TIMESTAMP()`,
-  )
-  await cleanupExpiredMessages(pool)
-  await pool.execute('DELETE FROM activities WHERE ends_at <= UTC_TIMESTAMP()')
+const cleanupStats = { lastRunAt: null, durationMs: null, archived: 0, deleted: 0, unsuspended: 0, error: null }
+let cleanupRun = null
+let lastCleanupAt = 0
+
+/*
+ * The cleanup job: completes and archives ended events, then deletes them with
+ * their media and chat; applies message retention; ends lapsed suspensions;
+ * and drops expired sign-in rows. Safe to run concurrently (INSERT IGNORE).
+ */
+async function runCleanup() {
+  const startedAt = Date.now()
+  try {
+    await pool.execute(
+      `UPDATE activities SET status = 'completed', completed_by = 'system'
+       WHERE status = 'active' AND ends_at <= UTC_TIMESTAMP()`,
+    )
+    await pool.execute(
+      `UPDATE notifications n
+       JOIN activities a
+         ON n.dedupe_key = CONCAT('hosted-event:', a.public_id)
+       SET n.dismissed_at = COALESCE(n.dismissed_at, NOW())
+       WHERE n.type = 'hosted_event' AND a.ends_at <= UTC_TIMESTAMP()`,
+    )
+    /* Keep the facts of each ended event (not its media, venue or messages) for history and analytics. */
+    const [archived] = await pool.execute(
+      `INSERT IGNORE INTO activity_archive
+         (public_id, host_client_id, host_name, title, category, visibility, vibe, city, state, area,
+          latitude, longitude, event_tags, capacity, starts_at, ends_at, event_created_at, completed_by,
+          approved_count, pending_count, rejected_count, removed_count, image_count, video_count,
+          chat_message_count, report_count)
+       SELECT a.public_id, a.host_client_id, c.full_name, a.title, a.category, a.visibility, a.vibe,
+              a.city, a.state, a.area, a.latitude, a.longitude, a.event_tags, a.capacity,
+              a.starts_at, a.ends_at, a.created_at, COALESCE(a.completed_by, 'system'),
+              (SELECT COUNT(*) FROM activity_join_requests jr WHERE jr.activity_id = a.activity_id AND jr.status = 'approved'),
+              (SELECT COUNT(*) FROM activity_join_requests jr WHERE jr.activity_id = a.activity_id AND jr.status = 'pending'),
+              (SELECT COUNT(*) FROM activity_join_requests jr WHERE jr.activity_id = a.activity_id AND jr.status = 'rejected'),
+              (SELECT COUNT(*) FROM activity_join_requests jr WHERE jr.activity_id = a.activity_id AND jr.status = 'removed'),
+              (SELECT COUNT(*) FROM activity_media m WHERE m.activity_id = a.activity_id AND m.media_kind = 'image'),
+              (SELECT COUNT(*) FROM activity_media m WHERE m.activity_id = a.activity_id AND m.media_kind = 'video'),
+              a.chat_message_count,
+              (SELECT COUNT(*) FROM message_reports r WHERE r.source = 'event' AND r.context_id = a.public_id)
+       FROM activities a JOIN clients c ON c.client_id = a.host_client_id
+       WHERE a.ends_at <= UTC_TIMESTAMP()`,
+    )
+    await cleanupExpiredMessages(pool)
+    const [deleted] = await pool.execute('DELETE FROM activities WHERE ends_at <= UTC_TIMESTAMP()')
+    const [unsuspended] = await pool.execute(
+      `UPDATE clients SET account_status = 'active', status_reason = NULL, suspended_until = NULL
+       WHERE account_status = 'suspended' AND suspended_until <= NOW()`,
+    )
+    await pool.execute('DELETE FROM client_login_history WHERE created_at < NOW() - INTERVAL 90 DAY LIMIT 5000')
+    await pool.execute('DELETE FROM email_verifications WHERE otp_expires_at < NOW() - INTERVAL 1 DAY')
+    await pool.execute('DELETE FROM login_otps WHERE otp_expires_at < NOW() - INTERVAL 1 DAY')
+    await pool.execute('DELETE FROM admin_login_challenges WHERE otp_expires_at < NOW() - INTERVAL 1 DAY')
+    await pool.execute('DELETE FROM admin_sessions WHERE expires_at < NOW() - INTERVAL 30 DAY')
+    Object.assign(cleanupStats, {
+      archived: archived.affectedRows,
+      deleted: deleted.affectedRows,
+      unsuspended: unsuspended.affectedRows,
+      error: null,
+    })
+  } catch (error) {
+    cleanupStats.error = error.message
+    throw error
+  } finally {
+    cleanupStats.lastRunAt = new Date().toISOString()
+    cleanupStats.durationMs = Date.now() - startedAt
+  }
+}
+
+/* Called on every list request, so overlapping calls share one run and repeats within 15 seconds are skipped. */
+function expireActivities() {
+  if (cleanupRun) return cleanupRun
+  if (Date.now() - lastCleanupAt < 15 * 1000) return Promise.resolve()
+  cleanupRun = runCleanup().finally(() => {
+    lastCleanupAt = Date.now()
+    cleanupRun = null
+  })
+  return cleanupRun
 }
 
 app.get('/api/health', (_request, response) => {
@@ -387,7 +662,7 @@ app.get('/api/activities', optionalSession, async (request, response, next) => {
       : ''
     const [rows] = await pool.execute(
       `${ACTIVITY_SELECT}
-       WHERE a.status = 'active' AND a.ends_at > UTC_TIMESTAMP()
+       WHERE a.status = 'active' AND a.ends_at > UTC_TIMESTAMP() AND ${activeClient('c')}
          AND (
            a.host_client_id = ?
            OR EXISTS (
@@ -463,6 +738,12 @@ app.post(
   requireSession,
   activityUpload.array('media', 8),
   async (request, response, next) => {
+    if (!getSetting('event_creation_enabled')) {
+      return response.status(403).json({
+        code: 'EVENT_CREATION_DISABLED',
+        message: 'Creating new events is paused right now. Please try again later.',
+      })
+    }
     let connection
     try {
       let details
@@ -553,9 +834,13 @@ app.post(
         await connection.rollback()
         return response.status(401).json({ message: 'Account not found.' })
       }
+      /*
+       * TEMPORARILY DISABLED: Restore this check to require 100 Spontii points
+       * for the first activity and 50 more for each subsequent activity.
       const pointsBalance = Number(pointRows[0].spontii_points)
       const activitiesCreated = Number(pointRows[0].lifetime_activities_created)
-      const requiredPoints = 100 + activitiesCreated * 50
+      const requiredPoints = eventRequiredPoints(activitiesCreated)
+      const awardPoints = getSetting('event_award_points')
       if (pointsBalance < requiredPoints) {
         await connection.rollback()
         return response.status(403).json({
@@ -566,6 +851,7 @@ app.post(
           activitiesCreated,
         })
       }
+      */
 
       const publicId = randomUUID()
       const [insertResult] = await connection.execute(
@@ -628,21 +914,27 @@ app.post(
          VALUES (?, 'hosted_event', 'Your event is live', ?, ?, ?)`,
         [
           request.clientId,
-          `${title} is live. You earned 50 Spontii points; open your event to manage it. This notification stays until the event ends or you complete it.`,
+          `${title} is live. You earned ${awardPoints} Spontii points; open your event to manage it. This notification stays until the event ends or you complete it.`,
           `/activities/${publicId}`,
           `hosted-event:${publicId}`,
         ],
       )
       const [pointUpdate] = await connection.execute(
         `UPDATE clients
-         SET spontii_points = spontii_points + 50,
+         SET spontii_points = spontii_points + ?,
              lifetime_activities_created = lifetime_activities_created + 1
          WHERE client_id = ?`,
-        [request.clientId],
+        [awardPoints, request.clientId],
       )
       if (pointUpdate.affectedRows !== 1) {
         throw new Error('Could not award Spontii points for the new activity.')
       }
+      await connection.execute(
+        `INSERT INTO points_ledger (client_id, delta, balance_after, source, reason)
+         VALUES (?, ?, ?, 'event_created', ?)`,
+        [request.clientId, awardPoints, pointsBalance + awardPoints, `Created ${title}`.slice(0, 255)],
+      )
+      await countDaily(connection, 'events_created')
       await connection.commit()
 
       const [rows] = await pool.execute(
@@ -660,16 +952,16 @@ app.post(
           id: String(notificationResult.insertId),
           type: 'hosted_event',
           title: 'Your event is live',
-          message: `${title} is live. You earned 50 Spontii points; open your event to manage it. This notification stays until the event ends or you complete it.`,
+          message: `${title} is live. You earned ${awardPoints} Spontii points; open your event to manage it. This notification stays until the event ends or you complete it.`,
           route: `/activities/${publicId}`,
           readAt: null,
           createdAt: new Date().toISOString(),
         },
         points: {
-          balance: pointsBalance + 50,
-          awarded: 50,
+          balance: pointsBalance + awardPoints,
+          awarded: awardPoints,
           activitiesCreated: activitiesCreated + 1,
-          nextActivityCost: 100 + (activitiesCreated + 1) * 50,
+          nextActivityCost: eventRequiredPoints(activitiesCreated + 1),
         },
       })
     } catch (error) {
@@ -697,7 +989,7 @@ app.get('/api/people/search', requireSession, async (request, response, next) =>
        LEFT JOIN friendships f
          ON f.client_low_id = LEAST(c.client_id, ?)
         AND f.client_high_id = GREATEST(c.client_id, ?)
-       WHERE c.client_id <> ? AND c.full_name LIKE ? ESCAPE '\\\\'
+       WHERE c.client_id <> ? AND c.full_name LIKE ? ESCAPE '\\\\' AND ${activeClient('c')}
          AND NOT EXISTS (
            SELECT 1 FROM user_blocks b
            WHERE (b.blocker_client_id = ? AND b.blocked_client_id = c.client_id)
@@ -739,7 +1031,7 @@ app.get('/api/friends', requireSession, async (request, response, next) => {
        JOIN clients c ON c.client_id =
          IF(f.client_low_id = ?, f.client_high_id, f.client_low_id)
        WHERE (f.client_low_id = ? OR f.client_high_id = ?)
-         AND f.status = 'accepted'
+         AND f.status = 'accepted' AND ${activeClient('c')}
        ORDER BY f.updated_at DESC`,
       [request.clientId, request.clientId, request.clientId],
     )
@@ -749,7 +1041,7 @@ app.get('/api/friends', requireSession, async (request, response, next) => {
               c.profile_bio, c.profile_tags, c.profile_photo_mime, c.spontii_score
        FROM friendships f
        JOIN clients c ON c.client_id = f.requester_client_id
-       WHERE f.recipient_client_id = ? AND f.status = 'pending'
+       WHERE f.recipient_client_id = ? AND f.status = 'pending' AND ${activeClient('c')}
        ORDER BY f.created_at DESC`,
       [request.clientId],
     )
@@ -759,7 +1051,7 @@ app.get('/api/friends', requireSession, async (request, response, next) => {
               c.profile_bio, c.profile_tags, c.profile_photo_mime, c.spontii_score
        FROM friendships f
        JOIN clients c ON c.client_id = f.recipient_client_id
-       WHERE f.requester_client_id = ? AND f.status = 'pending'
+       WHERE f.requester_client_id = ? AND f.status = 'pending' AND ${activeClient('c')}
        ORDER BY f.created_at DESC`,
       [request.clientId],
     )
@@ -826,8 +1118,8 @@ app.get('/api/people/:id', requireSession, async (request, response, next) => {
   try {
     const [rows] = await pool.execute(
       `SELECT client_id, full_name, profile_city, profile_tagline, profile_bio,
-              profile_tags, profile_photo_mime, spontii_score
-       FROM clients WHERE client_id = ? LIMIT 1`,
+              profile_tags, profile_photo_mime, spontii_score, spontii_verified
+       FROM clients c WHERE client_id = ? AND ${activeClient('c')} LIMIT 1`,
       [personId],
     )
     if (!rows[0]) return response.status(404).json({ message: 'Profile not found.' })
@@ -868,7 +1160,7 @@ app.get('/api/people/:id/photo', requireSession, async (request, response, next)
   try {
     const [rows] = await pool.execute(
       `SELECT profile_photo, profile_photo_mime
-       FROM clients WHERE client_id = ? LIMIT 1`,
+       FROM clients c WHERE client_id = ? AND ${activeClient('c')} LIMIT 1`,
       [request.params.id],
     )
     const photo = rows[0]
@@ -897,7 +1189,7 @@ app.post('/api/friends/requests/:personId', requireSession, async (request, resp
     const lowId = Math.min(request.clientId, personId)
     const highId = Math.max(request.clientId, personId)
     const [peopleRows] = await connection.execute(
-      'SELECT client_id FROM clients WHERE client_id IN (?, ?)',
+      `SELECT client_id FROM clients c WHERE client_id IN (?, ?) AND ${activeClient('c')}`,
       [request.clientId, personId],
     )
     if (peopleRows.length !== 2 || await isBlockedBetween(connection, request.clientId, personId)) {
@@ -1067,12 +1359,13 @@ app.post('/api/activities/:id/requests', requireSession, async (request, respons
     const [activities] = await connection.execute(
       `SELECT activity_id, public_id, host_client_id, title, visibility,
               join_request_cutoff_minutes, capacity, status,
-              starts_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL join_request_cutoff_minutes MINUTE) AS requests_closed
+              starts_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL join_request_cutoff_minutes MINUTE) AS requests_closed,
+              EXISTS(SELECT 1 FROM clients c WHERE c.client_id = host_client_id AND ${activeClient('c')}) AS host_active
        FROM activities WHERE public_id = ? FOR UPDATE`,
       [request.params.id],
     )
     const activity = activities[0]
-    if (!activity || activity.status !== 'active') {
+    if (!activity || activity.status !== 'active' || !activity.host_active) {
       await connection.rollback()
       return response.status(404).json({ message: 'Event not found or already ended.' })
     }
@@ -1185,7 +1478,7 @@ app.get('/api/activities/:id/requests', requireSession, async (request, response
               c.profile_bio, c.profile_tags, c.profile_photo_mime, c.spontii_score
        FROM activity_join_requests jr
        JOIN clients c ON c.client_id = jr.applicant_client_id
-       WHERE jr.activity_id = ? AND jr.status = 'pending'
+       WHERE jr.activity_id = ? AND jr.status = 'pending' AND ${activeClient('c')}
        ORDER BY jr.created_at ASC`,
       [activities[0].activity_id],
     )
@@ -1223,7 +1516,8 @@ app.patch('/api/activities/:id/requests/:requestId', requireSession, async (requ
               jr.request_id, jr.applicant_client_id, jr.status
        FROM activities a
        JOIN activity_join_requests jr ON jr.activity_id = a.activity_id
-       WHERE a.public_id = ? AND jr.request_id = ?
+       JOIN clients c ON c.client_id = jr.applicant_client_id
+       WHERE a.public_id = ? AND jr.request_id = ? AND ${activeClient('c')}
        FOR UPDATE`,
       [request.params.id, request.params.requestId],
     )
@@ -1259,7 +1553,7 @@ app.patch('/api/activities/:id/requests/:requestId', requireSession, async (requ
        ON DUPLICATE KEY UPDATE read_at = NULL, dismissed_at = NULL, created_at = NOW()`,
       [
         item.applicant_client_id,
-        action === 'approve' ? 'You’re in!' : 'Event request update',
+        action === 'approve' ? 'Youâ€™re in!' : 'Event request update',
         action === 'approve' ? `The host approved your request for ${item.title}.` : `The host declined your request for ${item.title}.`,
         `/activities/${request.params.id}`,
         `event-join-review:${request.params.id}:${item.applicant_client_id}`,
@@ -1295,7 +1589,7 @@ app.get('/api/activities/:id/attendees', requireSession, async (request, respons
               c.profile_bio, c.profile_tags, c.profile_photo_mime, c.spontii_score
        FROM activity_join_requests jr
        JOIN clients c ON c.client_id = jr.applicant_client_id
-       WHERE jr.activity_id = ? AND jr.status = 'approved'
+       WHERE jr.activity_id = ? AND jr.status = 'approved' AND ${activeClient('c')}
        ORDER BY jr.reviewed_at ASC`,
       [activity.activity_id],
     )
@@ -1323,13 +1617,40 @@ app.get('/api/activities/:id/attendees', requireSession, async (request, respons
 
 registerChatRoutes(app, { pool, requireSession })
 
+/*
+ * Completes an active event inside the caller's transaction and clears the
+ * host's live-event notification. After the commit, call notifyEventClosed so
+ * attendees' live chat and host DMs close. Returns the cleared notification id.
+ */
+async function completeActivity(db, activity, completedBy) {
+  await db.execute(
+    `UPDATE activities SET status = 'completed', completed_by = ? WHERE activity_id = ?`,
+    [completedBy, activity.activity_id],
+  )
+  const dedupeKey = `hosted-event:${activity.public_id}`
+  const [notifications] = await db.execute(
+    `SELECT notification_id FROM notifications
+     WHERE client_id = ? AND type = 'hosted_event'
+       AND dedupe_key = ? AND dismissed_at IS NULL
+     LIMIT 1`,
+    [activity.host_client_id, dedupeKey],
+  )
+  await db.execute(
+    `UPDATE notifications SET dismissed_at = NOW()
+     WHERE client_id = ? AND type = 'hosted_event'
+       AND dedupe_key = ? AND dismissed_at IS NULL`,
+    [activity.host_client_id, dedupeKey],
+  )
+  return notifications[0] ? String(notifications[0].notification_id) : null
+}
+
 app.patch('/api/activities/:id/complete', requireSession, async (request, response, next) => {
   let connection
   try {
     connection = await pool.getConnection()
     await connection.beginTransaction()
     const [rows] = await connection.execute(
-      `SELECT activity_id, host_client_id, status
+      `SELECT activity_id, public_id, host_client_id, status
        FROM activities WHERE public_id = ? LIMIT 1`,
       [request.params.id],
     )
@@ -1347,23 +1668,7 @@ app.patch('/api/activities/:id/complete', requireSession, async (request, respon
       return response.status(409).json({ message: 'This event has already been completed.' })
     }
 
-    await connection.execute(
-      `UPDATE activities SET status = 'completed' WHERE activity_id = ?`,
-      [activity.activity_id],
-    )
-    const [notifications] = await connection.execute(
-      `SELECT notification_id FROM notifications
-       WHERE client_id = ? AND type = 'hosted_event'
-         AND dedupe_key = ? AND dismissed_at IS NULL
-       LIMIT 1`,
-      [request.clientId, `hosted-event:${request.params.id}`],
-    )
-    await connection.execute(
-      `UPDATE notifications SET dismissed_at = NOW()
-       WHERE client_id = ? AND type = 'hosted_event'
-         AND dedupe_key = ? AND dismissed_at IS NULL`,
-      [request.clientId, `hosted-event:${request.params.id}`],
-    )
+    const notificationId = await completeActivity(connection, activity, 'host')
     await connection.commit()
     notifyInBackground(
       notifyEventClosed(pool, activity.activity_id, request.params.id, request.clientId),
@@ -1371,7 +1676,7 @@ app.patch('/api/activities/:id/complete', requireSession, async (request, respon
     )
     response.json({
       message: 'Event completed.',
-      notificationId: notifications[0] ? String(notifications[0].notification_id) : null,
+      notificationId,
     })
   } catch (error) {
     if (connection) await connection.rollback()
@@ -1389,6 +1694,7 @@ app.get('/api/activities/:id/media/:mediaId', optionalSession, async (request, r
        JOIN activities a ON a.activity_id = m.activity_id
        WHERE a.public_id = ? AND m.media_id = ?
          AND a.ends_at > UTC_TIMESTAMP()
+         AND EXISTS (SELECT 1 FROM clients c WHERE c.client_id = a.host_client_id AND ${activeClient('c')})
          AND (
            a.visibility = 'public' OR a.host_client_id = ?
            OR EXISTS (
@@ -1526,9 +1832,12 @@ app.get('/api/notifications', requireSession, async (request, response, next) =>
       const [claimResult] = await pool.execute(
         `INSERT IGNORE INTO notifications
            (client_id, type, title, message, route, dedupe_key)
-         VALUES (?, 'daily_points_claim', 'Your daily Spontii points are ready',
-                 'Claim 20 Spontii points today. You can claim once per day.', NULL, ?)`,
-        [request.clientId, `daily-points:${dayKey}`],
+         VALUES (?, 'daily_points_claim', 'Your daily Spontii points are ready', ?, NULL, ?)`,
+        [
+          request.clientId,
+          `Claim ${getSetting('daily_claim_points')} Spontii points today. You can claim once per day.`,
+          `daily-points:${dayKey}`,
+        ],
       )
       if (claimResult.affectedRows === 1) {
         createdIds.push(String(claimResult.insertId))
@@ -1578,8 +1887,9 @@ app.get('/api/points', requireSession, async (request, response, next) => {
     response.json({
       balance: Number(rows[0].spontii_points),
       activitiesCreated,
-      nextActivityCost: 100 + activitiesCreated * 50,
+      nextActivityCost: eventRequiredPoints(activitiesCreated),
       dailyClaimAvailable: rows[0].lastClaimDate !== rows[0].today,
+      dailyClaimAmount: getSetting('daily_claim_points'),
     })
   } catch (error) {
     next(error)
@@ -1604,19 +1914,25 @@ app.post('/api/points/daily-claim', requireSession, async (request, response, ne
     }
     if (rows[0].lastClaimDate === rows[0].today) {
       await connection.rollback()
-      return response.status(409).json({ message: 'You have already claimed today’s Spontii points.' })
+      return response.status(409).json({ message: 'You have already claimed todayâ€™s Spontii points.' })
     }
 
+    const award = getSetting('daily_claim_points')
     const [updateResult] = await connection.execute(
       `UPDATE clients
-       SET spontii_points = spontii_points + 20,
+       SET spontii_points = spontii_points + ?,
            last_daily_points_claim_date = CURRENT_DATE()
        WHERE client_id = ?`,
-      [request.clientId],
+      [award, request.clientId],
     )
     if (updateResult.affectedRows !== 1) {
       throw new Error('Could not claim daily Spontii points.')
     }
+    await connection.execute(
+      `INSERT INTO points_ledger (client_id, delta, balance_after, source, reason)
+       VALUES (?, ?, ?, 'daily_claim', 'Daily claim')`,
+      [request.clientId, award, Number(rows[0].spontii_points) + award],
+    )
     await connection.execute(
       `UPDATE notifications SET dismissed_at = NOW(), read_at = COALESCE(read_at, NOW())
        WHERE client_id = ? AND type = 'daily_points_claim'
@@ -1626,9 +1942,9 @@ app.post('/api/points/daily-claim', requireSession, async (request, response, ne
     )
     await connection.commit()
     response.json({
-      awarded: 20,
-      balance: Number(rows[0].spontii_points) + 20,
-      message: '20 Spontii points added to your balance.',
+      awarded: award,
+      balance: Number(rows[0].spontii_points) + award,
+      message: `${award} Spontii points added to your balance.`,
     })
   } catch (error) {
     if (connection) await connection.rollback()
@@ -1736,7 +2052,27 @@ async function issueLoginOtp(email) {
   return otp
 }
 
+const SIGNUPS_PAUSED = {
+  code: 'SIGNUPS_DISABLED',
+  message: 'New sign-ups are paused right now. Please try again later.',
+}
+const IDENTITY_BLOCKED = { code: 'IDENTITY_BLOCKED', message: "This can't be used to create a Spontii account." }
+
+/* Emails and phones the Spontii team blocked from signing up (usually after a ban). */
+async function isBlockedIdentity(email, phone = null) {
+  const [rows] = await pool.execute(
+    `SELECT 1 FROM blocked_identities
+     WHERE (kind = 'email' AND identity_value = ?) OR (kind = 'phone' AND identity_value = ?)
+     LIMIT 1`,
+    [email, phone],
+  )
+  return Boolean(rows[0])
+}
+
 app.post('/api/auth/signup', authLimiter, async (request, response, next) => {
+  if (!getSetting('signups_enabled')) {
+    return response.status(403).json(SIGNUPS_PAUSED)
+  }
   const validation = validateSignup(request.body)
 
   if (validation.message) {
@@ -1745,6 +2081,9 @@ app.post('/api/auth/signup', authLimiter, async (request, response, next) => {
 
   try {
     const { name, phone, email, password } = validation.value
+    if (await isBlockedIdentity(email, phone)) {
+      return response.status(403).json(IDENTITY_BLOCKED)
+    }
     const verificationToken = typeof request.body?.emailVerificationToken === 'string'
       ? request.body.emailVerificationToken
       : ''
@@ -1794,6 +2133,9 @@ app.post('/api/auth/signup', authLimiter, async (request, response, next) => {
 })
 
 app.post('/api/auth/send-verification-code', authLimiter, async (request, response, next) => {
+  if (!getSetting('signups_enabled')) {
+    return response.status(403).json(SIGNUPS_PAUSED)
+  }
   const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : ''
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
@@ -1801,6 +2143,9 @@ app.post('/api/auth/send-verification-code', authLimiter, async (request, respon
   }
 
   try {
+    if (await isBlockedIdentity(email)) {
+      return response.status(403).json(IDENTITY_BLOCKED)
+    }
     const [existing] = await pool.execute(
       'SELECT client_id FROM clients WHERE email = ? LIMIT 1',
       [email],
@@ -1942,7 +2287,7 @@ app.post('/api/auth/resend-otp', authLimiter, async (request, response, next) =>
 app.post('/api/auth/send-login-code', authLimiter, async (request, response, next) => {
   const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : ''
   const genericResponse = {
-    message: 'If an account exists for that email, we’ll send a login code.',
+    message: 'If an account exists for that email, weâ€™ll send a login code.',
     expiresInSeconds: OTP_TTL_MINUTES * 60,
     resendInSeconds: OTP_RESEND_SECONDS,
   }
@@ -1953,11 +2298,12 @@ app.post('/api/auth/send-login-code', authLimiter, async (request, response, nex
 
   try {
     const [clients] = await pool.execute(
-      'SELECT full_name FROM clients WHERE email = ? LIMIT 1',
+      `SELECT full_name, ${ACCOUNT_STATE_COLUMNS} FROM clients WHERE email = ? LIMIT 1`,
       [email],
     )
     const client = clients[0]
-    if (!client) {
+    /* Suspended and banned accounts get the same reply, but no code. */
+    if (!client || accountBlock(client)) {
       return response.json(genericResponse)
     }
 
@@ -2028,13 +2374,18 @@ app.post('/api/auth/login-with-code', authLimiter, async (request, response, nex
     }
 
     const [clients] = await pool.execute(
-      'SELECT client_id FROM clients WHERE email = ? LIMIT 1',
+      `SELECT client_id, ${ACCOUNT_STATE_COLUMNS} FROM clients WHERE email = ? LIMIT 1`,
       [email],
     )
     const client = clients[0]
     if (!client) {
       await pool.execute('DELETE FROM login_otps WHERE email = ?', [email])
       return invalidCode()
+    }
+    const block = accountBlock(client)
+    if (block) {
+      await pool.execute('DELETE FROM login_otps WHERE email = ?', [email])
+      return response.status(403).json(block)
     }
 
     const [deleteResult] = await pool.execute(
@@ -2050,7 +2401,8 @@ app.post('/api/auth/login-with-code', authLimiter, async (request, response, nex
       return invalidCode()
     }
 
-    setSessionCookie(response, client.client_id)
+    setSessionCookie(response, client.client_id, client.session_version)
+    recordLogin(request, client.client_id, 'otp')
     response.json({ user: publicUser(profileRows[0]) })
   } catch (error) {
     next(error)
@@ -2071,9 +2423,7 @@ app.post('/api/auth/login', authLimiter, async (request, response, next) => {
 
   try {
     const [rows] = await pool.execute(
-      `SELECT client_id, full_name, phone_number, email, password_hash,
-              spontiii_id, profile_city, profile_tagline, profile_bio, profile_tags,
-              profile_photo_mime, spontii_score, created_at
+      `SELECT client_id, password_hash, ${ACCOUNT_STATE_COLUMNS}
        FROM clients WHERE email = ? LIMIT 1`,
       [email],
     )
@@ -2082,8 +2432,14 @@ app.post('/api/auth/login', authLimiter, async (request, response, next) => {
     if (!client || !(await bcrypt.compare(password, client.password_hash))) {
       return response.status(401).json({ message: 'Invalid email or password.' })
     }
+    /* Checked only after the password matches, so this can't reveal which emails exist. */
+    const block = accountBlock(client)
+    if (block) {
+      return response.status(403).json(block)
+    }
 
-    setSessionCookie(response, client.client_id)
+    setSessionCookie(response, client.client_id, client.session_version)
+    recordLogin(request, client.client_id, 'password')
     const [profileRows] = await selectProfile(client.client_id)
     response.json({ user: publicUser(profileRows[0]) })
   } catch (error) {
@@ -2261,15 +2617,43 @@ app.post('/api/auth/logout', (_request, response) => {
   response.status(204).end()
 })
 
+registerAdminRoutes(app, {
+  pool,
+  cookieOptions,
+  otpSecret: jwtSecret,
+  calculateProfileCompletion,
+  completeActivity,
+  disconnectUser,
+  emitToUsers,
+  getSocketStats,
+  notifyEventClosed,
+  notifyInBackground,
+  profileScore,
+  runCleanup: () => {
+    lastCleanupAt = Date.now()
+    return runCleanup()
+  },
+  cleanupStats,
+})
+
 app.use((error, _request, response, _next) => {
+  if (error.type === 'entity.parse.failed') {
+    return response.status(400).json({ message: 'The request body is not valid JSON.' })
+  }
+  if (error.type === 'entity.too.large') {
+    return response.status(413).json({ message: 'The request is too large.' })
+  }
   console.error('API request failed:', error)
   if (response.headersSent) return
   if (error instanceof multer.MulterError) {
     const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400
+    const message = error.code === 'LIMIT_FILE_SIZE'
+      ? 'Uploaded files must be 12 MB or smaller.'
+      : error.code === 'LIMIT_FILE_COUNT'
+        ? 'You can attach up to five files per message.'
+        : 'Could not process the uploaded files.'
     return response.status(status).json({
-      message: status === 413
-        ? 'Uploaded files must be 12 MB or smaller.'
-        : 'Could not process the uploaded files.',
+      message,
     })
   }
   if (error.message === 'Upload JPG, PNG, WebP, MP4, WebM, or MOV files only.') {
@@ -2418,8 +2802,9 @@ async function start() {
   ]
   for (const [columnName, definition] of activityColumnMigrations) {
     if (!activityColumnNames.has(columnName)) {
-        await pool.query(`ALTER TABLE activities ADD COLUMN ${columnName} ${definition}`)
+      await pool.query(`ALTER TABLE activities ADD COLUMN ${columnName} ${definition}`)
     }
+  }
     const [visibilityColumn] = await pool.query(
       `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'activities'
@@ -2466,10 +2851,9 @@ async function start() {
           FOREIGN KEY (recipient_client_id) REFERENCES clients (client_id) ON DELETE CASCADE,
         CONSTRAINT chk_friendship_distinct_clients CHECK (client_low_id < client_high_id)
       ) ENGINE=InnoDB
-        DEFAULT CHARACTER SET utf8mb4
-        COLLATE utf8mb4_unicode_ci
-    `)
-  }
+          DEFAULT CHARACTER SET utf8mb4
+          COLLATE utf8mb4_unicode_ci
+      `)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS activity_media (
@@ -2533,12 +2917,6 @@ async function start() {
     ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `)
   await createChatTables(pool)
-  await expireActivities()
-  const activityCleanupTimer = setInterval(() => {
-    expireActivities()
-        .catch((error) => console.error('Failed to expire ended activities:', error))
-  }, 60 * 1000)
-  activityCleanupTimer.unref()
 
   const profileColumns = [
     ['spontiii_id', 'VARCHAR(40) NULL'],
@@ -2594,12 +2972,25 @@ async function start() {
     )
   }
 
+  /* Admin tables and columns must exist before the cleanup job reads them. */
+  await createAdminTables(pool)
+  await seedSuperAdmin(pool)
+  await loadSettings(pool)
+  startSettingsRefresh(pool)
+
+  await expireActivities()
+  const activityCleanupTimer = setInterval(() => {
+    expireActivities()
+        .catch((error) => console.error('Failed to expire ended activities:', error))
+  }, 60 * 1000)
+  activityCleanupTimer.unref()
+
   const server = createServer(app)
   attachChatSocket(server, {
     cookieName,
     frontendOrigins,
     isAllowedOrigin,
-    verifySessionToken,
+    resolveSession,
   })
   server.listen(port, () => {
     console.log(`Spontii API listening on http://localhost:${port}`)

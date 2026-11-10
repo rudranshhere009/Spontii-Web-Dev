@@ -1,3 +1,8 @@
+export function sessionEndedMessage(detail) {
+  if (!detail?.message) return ''
+  return detail.reason ? `${detail.message} Reason: ${detail.reason}` : detail.message
+}
+
 /*
  * Where to send a user after login/signup: the protected page they
  * originally asked for (router state set by ProtectedPage), otherwise Home.

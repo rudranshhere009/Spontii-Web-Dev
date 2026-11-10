@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { redirectTarget } from '../lib/auth'
+import { redirectTarget, sessionEndedMessage } from '../lib/auth'
 import logo from '../assets/logo.png'
 
 function EyeIcon({ open }) {
@@ -38,7 +38,7 @@ function EyeIcon({ open }) {
 export default function Login() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { login } = useAuth()
+  const { login, sessionNotice } = useAuth()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -68,7 +68,7 @@ export default function Login() {
         navigate(target, { replace: true })
       }
     } catch (submitError) {
-      setError(submitError.message)
+      setError(sessionEndedMessage(submitError.data) || submitError.message)
       setLoading(false)
     }
   }
@@ -112,6 +112,15 @@ export default function Login() {
               className="mb-6 rounded-xl border border-mint/30 bg-mint-soft px-4 py-3 text-sm leading-relaxed text-text"
             >
               {location.state.notice}
+            </p>
+          )}
+
+          {sessionNotice && !error && (
+            <p
+              role="alert"
+              className="mb-6 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm leading-relaxed text-text"
+            >
+              {sessionNotice}
             </p>
           )}
 

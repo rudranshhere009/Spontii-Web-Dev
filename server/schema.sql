@@ -15,11 +15,20 @@ CREATE TABLE IF NOT EXISTS clients (
   spontii_points INT UNSIGNED NOT NULL DEFAULT 0,
   lifetime_activities_created INT UNSIGNED NOT NULL DEFAULT 0,
   last_daily_points_claim_date DATE NULL,
+  account_status ENUM('active', 'suspended', 'banned') NOT NULL DEFAULT 'active',
+  status_reason VARCHAR(500) NULL,
+  suspended_until DATETIME NULL,
+  session_version INT UNSIGNED NOT NULL DEFAULT 0,
+  last_seen_at DATETIME NULL,
+  spontii_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  warning_count INT UNSIGNED NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (client_id),
   UNIQUE KEY uq_clients_phone_number (phone_number),
   UNIQUE KEY uq_clients_email (email),
-  UNIQUE KEY uq_clients_spontiii_id (spontiii_id)
+  UNIQUE KEY uq_clients_spontiii_id (spontiii_id),
+  KEY idx_clients_account_status (account_status),
+  KEY idx_clients_created (created_at)
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
@@ -100,6 +109,8 @@ CREATE TABLE IF NOT EXISTS activities (
   event_tags JSON NULL,
   banner_image VARCHAR(1000) NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'active',
+  completed_by ENUM('host', 'system', 'admin') NULL,
+  chat_message_count INT UNSIGNED NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (activity_id),
   UNIQUE KEY uq_activities_public_id (public_id),
@@ -135,6 +146,7 @@ CREATE TABLE IF NOT EXISTS activity_chat_messages (
   activity_id BIGINT UNSIGNED NOT NULL,
   sender_client_id BIGINT UNSIGNED NOT NULL,
   message_text VARCHAR(2000) NOT NULL,
+  deleted_for_everyone_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (message_id),
   KEY idx_activity_chat_retention (created_at),
@@ -230,6 +242,7 @@ CREATE TABLE IF NOT EXISTS direct_messages (
   conversation_id BIGINT UNSIGNED NOT NULL,
   sender_client_id BIGINT UNSIGNED NOT NULL,
   message_text VARCHAR(2000) NOT NULL,
+  deleted_for_everyone_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (message_id),
   KEY idx_direct_messages_conversation (conversation_id, message_id),
@@ -238,6 +251,21 @@ CREATE TABLE IF NOT EXISTS direct_messages (
     FOREIGN KEY (conversation_id) REFERENCES direct_conversations (conversation_id) ON DELETE CASCADE,
   CONSTRAINT fk_direct_message_sender
     FOREIGN KEY (sender_client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS chat_message_user_deletions (
+  source ENUM('event', 'direct') NOT NULL,
+  thread_id VARCHAR(80) NOT NULL,
+  message_id BIGINT UNSIGNED NOT NULL,
+  client_id BIGINT UNSIGNED NOT NULL,
+  delete_at DATETIME NOT NULL,
+  notified_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (source, message_id, client_id),
+  KEY idx_chat_user_deletion_due (delete_at, notified_at),
+  KEY idx_chat_user_deletion_client (client_id, source, thread_id)
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
@@ -265,12 +293,236 @@ CREATE TABLE IF NOT EXISTS message_reports (
   message_snapshot VARCHAR(2000) NOT NULL,
   reason VARCHAR(40) NOT NULL,
   status ENUM('open', 'reviewed', 'actioned') NOT NULL DEFAULT 'open',
+  context_id VARCHAR(64) NULL,
+  context_label VARCHAR(160) NULL,
+  reviewed_by_admin_id INT UNSIGNED NULL,
+  reviewed_at DATETIME NULL,
+  resolution_note VARCHAR(500) NULL,
+  action_taken VARCHAR(30) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (report_id),
   UNIQUE KEY uq_message_report_once (reporter_client_id, source, message_id),
   KEY idx_message_reports_status (status, created_at),
+  KEY idx_message_reports_reported (reported_client_id, created_at),
   CONSTRAINT fk_message_report_reporter
     FOREIGN KEY (reporter_client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+-- Super admin portal (created by server/admin/schema.js on startup).
+
+CREATE TABLE IF NOT EXISTS admin_users (
+  admin_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  email VARCHAR(254) NOT NULL,
+  full_name VARCHAR(100) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('super_admin') NOT NULL DEFAULT 'super_admin',
+  status ENUM('active', 'disabled') NOT NULL DEFAULT 'active',
+  failed_attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  locked_until DATETIME NULL,
+  must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
+  last_login_at DATETIME NULL,
+  created_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (admin_id),
+  UNIQUE KEY uq_admin_users_email (email)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admin_login_challenges (
+  challenge_id CHAR(36) NOT NULL,
+  admin_id INT UNSIGNED NOT NULL,
+  otp_hash CHAR(64) NOT NULL,
+  otp_expires_at DATETIME NOT NULL,
+  attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  last_sent_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (challenge_id),
+  KEY idx_admin_login_challenges_admin (admin_id),
+  CONSTRAINT fk_admin_challenge_admin
+    FOREIGN KEY (admin_id) REFERENCES admin_users (admin_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  session_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  token_hash CHAR(64) NOT NULL,
+  admin_id INT UNSIGNED NOT NULL,
+  ip VARCHAR(64) NULL,
+  user_agent VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at DATETIME NOT NULL,
+  expires_at DATETIME NOT NULL,
+  revoked_at DATETIME NULL,
+  PRIMARY KEY (session_id),
+  UNIQUE KEY uq_admin_sessions_token (token_hash),
+  KEY idx_admin_sessions_admin (admin_id, revoked_at),
+  CONSTRAINT fk_admin_session_admin
+    FOREIGN KEY (admin_id) REFERENCES admin_users (admin_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  audit_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  admin_id INT UNSIGNED NULL,
+  action VARCHAR(60) NOT NULL,
+  target_type VARCHAR(30) NULL,
+  target_id VARCHAR(64) NULL,
+  details JSON NULL,
+  ip VARCHAR(64) NULL,
+  user_agent VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (audit_id),
+  KEY idx_admin_audit_created (created_at),
+  KEY idx_admin_audit_admin (admin_id, created_at),
+  KEY idx_admin_audit_target (target_type, target_id, created_at),
+  KEY idx_admin_audit_action (action, created_at)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  setting_key VARCHAR(60) NOT NULL,
+  setting_value JSON NOT NULL,
+  updated_by INT UNSIGNED NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (setting_key)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admin_announcements (
+  announcement_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  title VARCHAR(120) NOT NULL,
+  message VARCHAR(500) NOT NULL,
+  route VARCHAR(255) NULL,
+  audience JSON NOT NULL,
+  recipients_count INT UNSIGNED NOT NULL DEFAULT 0,
+  sent_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (announcement_id),
+  KEY idx_admin_announcements_created (created_at)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admin_user_notes (
+  note_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_id BIGINT UNSIGNED NOT NULL,
+  admin_id INT UNSIGNED NULL,
+  note VARCHAR(2000) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (note_id),
+  KEY idx_admin_user_notes_client (client_id, created_at),
+  CONSTRAINT fk_admin_note_client
+    FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS points_ledger (
+  entry_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_id BIGINT UNSIGNED NOT NULL,
+  delta INT NOT NULL,
+  balance_after INT UNSIGNED NOT NULL,
+  source ENUM('daily_claim', 'event_created', 'admin_adjust') NOT NULL,
+  admin_id INT UNSIGNED NULL,
+  reason VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (entry_id),
+  KEY idx_points_ledger_client (client_id, created_at),
+  CONSTRAINT fk_points_ledger_client
+    FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS activity_archive (
+  archive_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  public_id CHAR(36) NOT NULL,
+  host_client_id BIGINT UNSIGNED NULL,
+  host_name VARCHAR(100) NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  category VARCHAR(80) NOT NULL,
+  visibility VARCHAR(20) NOT NULL,
+  vibe VARCHAR(60) NULL,
+  city VARCHAR(80) NOT NULL,
+  state VARCHAR(80) NOT NULL DEFAULT '',
+  area VARCHAR(160) NOT NULL,
+  latitude DECIMAL(10, 7) NULL,
+  longitude DECIMAL(10, 7) NULL,
+  event_tags JSON NULL,
+  capacity SMALLINT UNSIGNED NOT NULL,
+  starts_at DATETIME NOT NULL,
+  ends_at DATETIME NOT NULL,
+  event_created_at TIMESTAMP NULL DEFAULT NULL,
+  completed_by VARCHAR(10) NOT NULL DEFAULT 'system',
+  approved_count INT UNSIGNED NOT NULL DEFAULT 0,
+  pending_count INT UNSIGNED NOT NULL DEFAULT 0,
+  rejected_count INT UNSIGNED NOT NULL DEFAULT 0,
+  removed_count INT UNSIGNED NOT NULL DEFAULT 0,
+  image_count INT UNSIGNED NOT NULL DEFAULT 0,
+  video_count INT UNSIGNED NOT NULL DEFAULT 0,
+  chat_message_count INT UNSIGNED NOT NULL DEFAULT 0,
+  report_count INT UNSIGNED NOT NULL DEFAULT 0,
+  archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (archive_id),
+  UNIQUE KEY uq_activity_archive_public (public_id),
+  KEY idx_activity_archive_host (host_client_id),
+  KEY idx_activity_archive_ends (ends_at)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS client_login_history (
+  login_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_id BIGINT UNSIGNED NOT NULL,
+  method ENUM('password', 'otp') NOT NULL,
+  ip VARCHAR(64) NULL,
+  user_agent VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (login_id),
+  KEY idx_client_login_history_client (client_id, created_at),
+  KEY idx_client_login_history_created (created_at),
+  CONSTRAINT fk_login_history_client
+    FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS client_activity_days (
+  client_id BIGINT UNSIGNED NOT NULL,
+  activity_day DATE NOT NULL,
+  PRIMARY KEY (client_id, activity_day),
+  KEY idx_client_activity_days_day (activity_day),
+  CONSTRAINT fk_activity_day_client
+    FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS daily_counters (
+  counter_day DATE NOT NULL,
+  metric VARCHAR(40) NOT NULL,
+  counter_value INT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (counter_day, metric)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS blocked_identities (
+  blocked_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  kind ENUM('email', 'phone') NOT NULL,
+  identity_value VARCHAR(254) NOT NULL,
+  reason VARCHAR(255) NULL,
+  admin_id INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (blocked_id),
+  UNIQUE KEY uq_blocked_identity (kind, identity_value)
 ) ENGINE=InnoDB
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;

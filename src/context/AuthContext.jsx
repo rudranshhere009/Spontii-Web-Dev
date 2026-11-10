@@ -4,13 +4,27 @@ import {
   useEffect,
   useState,
 } from 'react'
-import { apiRequest } from '../lib/api'
+import { useNavigate } from 'react-router-dom'
+import { SESSION_ENDED_EVENT, apiRequest } from '../lib/api'
+import { sessionEndedMessage } from '../lib/auth'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
+  const navigate = useNavigate()
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [sessionNotice, setSessionNotice] = useState('')
+
+  useEffect(() => {
+    function onSessionEnded(event) {
+      setUser(null)
+      setSessionNotice(sessionEndedMessage(event.detail))
+      if (window.location.pathname !== '/login') navigate('/login', { replace: true })
+    }
+    window.addEventListener(SESSION_ENDED_EVENT, onSessionEnded)
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onSessionEnded)
+  }, [navigate])
 
   useEffect(() => {
     let active = true
@@ -68,6 +82,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: credentials,
     })
+    setSessionNotice('')
     setUser(result.user)
     return result.user
   }
@@ -84,6 +99,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: details,
     })
+    setSessionNotice('')
     setUser(result.user)
     return result.user
   }
@@ -117,6 +133,7 @@ export function AuthProvider({ children }) {
     user,
     loading,
     isAuthenticated: Boolean(user),
+    sessionNotice,
     signup,
     sendVerificationCode,
     verifyEmail,

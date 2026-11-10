@@ -39,7 +39,7 @@ function profileReminderSnoozedUntil(userId) {
 }
 
 /* Bottom padding keeps the last content clear of the mobile bottom bar and the floating Create button. */
-function ProtectedPage({ children }) {
+function ProtectedPage({ children, fixedContent = false }) {
   const { isAuthenticated, loading } = useAuth()
   const location = useLocation()
 
@@ -57,6 +57,17 @@ function ProtectedPage({ children }) {
         replace
         state={{ from: location }}
       />
+    )
+  }
+
+  if (fixedContent) {
+    return (
+      <div className="flex h-dvh flex-col overflow-hidden bg-bg text-text">
+        <Navbar />
+        <main className="min-h-0 flex-1 overflow-hidden pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">
+          {children}
+        </main>
+      </div>
     )
   }
 
@@ -122,7 +133,7 @@ function PublicHome() {
       <main className="pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-24">
         <Home />
       </main>
-
+      {/* Temporarily disabled: restore this render to show the profile completion reminder.
       {isAuthenticated &&
         typeof user?.profileCompletion === 'number' &&
         user.profileCompletion < 100 && (
@@ -131,6 +142,7 @@ function PublicHome() {
             user={user}
           />
         )}
+      */}
     </div>
   )
 }
@@ -356,9 +368,9 @@ export default function App() {
       />
 
       <Route
-        path="/inbox"
+        path="/inbox/*"
         element={
-          <ProtectedPage>
+          <ProtectedPage fixedContent>
             <Inbox />
           </ProtectedPage>
         }

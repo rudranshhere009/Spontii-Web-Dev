@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node server/index.js",
+    "admin": "node server/admin/cli.js",
     "build": "vite build",
     "lint": "oxlint",
     "preview": "vite preview"

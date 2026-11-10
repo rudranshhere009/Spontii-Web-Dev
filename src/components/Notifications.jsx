@@ -14,6 +14,7 @@ export default function Notifications() {
   const [notifications, setNotifications] = useState(null)
   const [toasts, setToasts] = useState([])
   const [open, setOpen] = useState(false)
+  const [warningNotification, setWarningNotification] = useState(null)
   const [error, setError] = useState('')
   const [points, setPoints] = useState(null)
   const [claimingPoints, setClaimingPoints] = useState(false)
@@ -86,10 +87,28 @@ export default function Notifications() {
     const initialLoad = window.setTimeout(loadNotifications, 0)
     const interval = window.setInterval(loadNotifications, POLL_INTERVAL_MS)
 
+    function onOpenNotifications() {
+      setOpen(true)
+      loadNotifications()
+    }
     function onNotificationCreated(event) {
       const notification = event.detail
-      if (notification?.id) showToast(notification)
+      if (notification?.id) {
+        const incoming = { ...notification, id: String(notification.id) }
+        setNotifications((previous) => previous
+          ? [incoming, ...previous.filter((item) => String(item.id) !== incoming.id)]
+            .sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
+          : previous)
+        showToast(incoming)
+      }
       loadNotifications()
+    }
+    function onWindowFocus() {
+      if (document.visibilityState === 'visible') loadNotifications()
+    }
+    function onMessageReceived(event) {
+      const message = event.detail
+      if (message?.id) showToast(message)
     }
     function onNotificationRemoved(event) {
       const id = String(event.detail?.id ?? '')
@@ -102,13 +121,21 @@ export default function Notifications() {
       timers.current.delete(id)
     }
 
+    window.addEventListener('spontii:open-notifications', onOpenNotifications)
     window.addEventListener('spontii:notification-created', onNotificationCreated)
+    window.addEventListener('spontii:message-received', onMessageReceived)
     window.addEventListener('spontii:notification-removed', onNotificationRemoved)
+    window.addEventListener('focus', onWindowFocus)
+    document.addEventListener('visibilitychange', onWindowFocus)
     return () => {
       window.clearTimeout(initialLoad)
       window.clearInterval(interval)
+      window.removeEventListener('spontii:open-notifications', onOpenNotifications)
       window.removeEventListener('spontii:notification-created', onNotificationCreated)
+      window.removeEventListener('spontii:message-received', onMessageReceived)
       window.removeEventListener('spontii:notification-removed', onNotificationRemoved)
+      window.removeEventListener('focus', onWindowFocus)
+      document.removeEventListener('visibilitychange', onWindowFocus)
       for (const timer of timeoutHandles.values()) window.clearTimeout(timer)
       timeoutHandles.clear()
     }
@@ -139,6 +166,17 @@ export default function Notifications() {
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [open])
+
+  useEffect(() => {
+    if (!warningNotification) return undefined
+
+    function onKeyDown(event) {
+      if (event.key === 'Escape') setWarningNotification(null)
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [warningNotification])
 
   async function removeNotification(id) {
     const key = String(id)
@@ -190,18 +228,22 @@ export default function Notifications() {
     try {
       await apiRequest(`/notifications/${item.id}/read`, { method: 'PATCH' })
       setNotifications((previous) =>
-        previous.map((notification) =>
+        previous?.map((notification) =>
           notification.id === item.id
             ? { ...notification, readAt: notification.readAt || new Date().toISOString() }
             : notification,
-        ),
+        ) ?? previous,
       )
       setOpen(false)
       setToasts((previous) => previous.filter((toast) => toast.id !== item.id))
       const timer = timers.current.get(item.id)
       if (timer) window.clearTimeout(timer)
       timers.current.delete(item.id)
-      if (item.route) navigate(item.route)
+      if (item.type === 'report_warning') {
+        setWarningNotification(item)
+      } else if (item.route) {
+        navigate(item.route)
+      }
     } catch (openError) {
       console.error('Failed to open notification:', openError)
       setError('Could not open this notification. Please try again.')
@@ -218,6 +260,18 @@ export default function Notifications() {
   }
 
   const unreadCount = notificationList.filter((item) => !item.readAt).length
+
+  useEffect(() => {
+    function publishUnreadCount() {
+      window.dispatchEvent(new CustomEvent('spontii:notifications-count', {
+        detail: { unreadCount },
+      }))
+    }
+
+    window.addEventListener('spontii:request-notifications-count', publishUnreadCount)
+    publishUnreadCount()
+    return () => window.removeEventListener('spontii:request-notifications-count', publishUnreadCount)
+  }, [unreadCount])
 
   return (
     <>
@@ -313,15 +367,15 @@ export default function Notifications() {
                         <div className="flex items-start justify-between gap-3">
                           <h3 className="line-clamp-1 min-w-0 flex-1 text-sm font-bold text-text">{item.title}</h3>
                           <div className="flex shrink-0 items-center gap-1.5">
-                            {item.route && item.type !== 'hosted_event' && (
+                            {(item.route && item.type !== 'hosted_event') || item.type === 'report_warning' ? (
                               <button
                                 type="button"
                                 onClick={() => openNotification(item)}
                                 className="rounded-md bg-mint px-2.5 py-1.5 text-xs font-bold leading-4 text-bg transition hover:bg-mint/90"
                               >
-                                Open
+                                {item.type === 'report_warning' ? 'View warning' : 'Open'}
                               </button>
-                            )}
+                            ) : null}
                             {item.type === 'daily_points_claim' && (
                               <button
                                 type="button"
@@ -370,6 +424,43 @@ export default function Notifications() {
         )}
       </div>
 
+      {warningNotification && createPortal(
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 px-4 py-6"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setWarningNotification(null)
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-warning-title"
+            className="w-full max-w-md rounded-3xl border border-amber-400/25 bg-surface-2 p-6 shadow-2xl"
+          >
+            <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-amber-400/25 bg-amber-400/10 text-amber-500">
+              <span aria-hidden="true" className="text-2xl font-bold">!</span>
+            </div>
+            <h2 id="report-warning-title" className="mt-4 text-center text-lg font-extrabold text-text">
+              Community safety notice
+            </h2>
+            <p className="mt-3 text-center text-sm leading-relaxed text-muted">
+              {warningNotification.message}
+            </p>
+            <p className="mt-3 text-center text-xs leading-relaxed text-muted-2">
+              Please keep future messages respectful and safe.
+            </p>
+            <button
+              type="button"
+              onClick={() => setWarningNotification(null)}
+              className="mt-5 w-full rounded-xl bg-mint px-4 py-2.5 text-sm font-bold text-bg transition hover:bg-mint/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
+            >
+              I understand
+            </button>
+          </section>
+        </div>,
+        document.body,
+      )}
+
       {createPortal(<div
         className="pointer-events-none fixed right-4 top-4 z-[70] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 sm:right-6 sm:top-6"
         aria-live="polite"
@@ -383,14 +474,17 @@ export default function Notifications() {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-extrabold text-mint">{item.title}</p>
+                {item.type === 'report_warning' && (
+                  <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">{item.message}</p>
+                )}
                 <div className="mt-2 flex justify-end gap-2">
-                  {item.route && (
+                  {(item.route || item.type === 'report_warning') && (
                     <button
                       type="button"
                       onClick={() => openNotification(item)}
                       className="rounded-lg bg-mint px-3 py-1.5 text-xs font-bold text-bg"
                     >
-                      Open
+                      {item.type === 'report_warning' ? 'View warning' : 'Open'}
                     </button>
                   )}
                   {item.type !== 'hosted_event' && (

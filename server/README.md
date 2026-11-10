@@ -36,10 +36,11 @@ completion covers photo, city, tagline, bio, and at least one tag; reaching 50%,
 Notifications are stored per account in the MySQL `notifications` table. The
 API creates a daily greeting and records each time the profile-completion
 reminder is shown. A daily notification lets an account claim 20 Spontii points
-once per database day. Event creation requires 100 points for the first lifetime
-activity and 50 more for each later one. Points are not deducted; each published
-activity awards 50 points, and both the requirement check and award are
-transactional. Creating an event also creates a persistent host notification;
+once per database day. By default, event creation requires 100 points for the
+first lifetime activity and 50 more for each later one. Points are not deducted;
+each published activity awards 50 points, and both the requirement check and
+award are transactional. Admins can change these four point values. Creating an
+event also creates a persistent host notification;
 it can be opened but cannot be dismissed manually. Hosts complete an event from
 its detail page, which removes the notification and hides the event from Home
 and Explore.
@@ -57,9 +58,9 @@ default). Only approved attendees and the host can view attendee profiles or use
 the event's database-backed live chat. Live chat messages older than 24 hours
 are deleted by the cleanup interval. Hosts can complete an event early with
 `PATCH /api/activities/:id/complete`; otherwise it is completed automatically
-at its scheduled end, its host notification is cleared, and the event and
-attached media are removed. Expiry runs at startup and on a one-minute cleanup
-interval.
+at its scheduled end, its host notification is cleared, and the event's
+moderation/analytics summary is archived before the event and attached media are
+removed. Expiry runs at startup and on a one-minute cleanup interval.
 Venue uploads accept JPG, PNG, WebP, MP4, WebM, and MOV files up to 12 MB each
 (up to 6 photos and 2 videos).
 
@@ -97,3 +98,30 @@ URL and configure `FRONTEND_ORIGIN` on the API to the exact frontend origin
 (comma-separate several). In production, `FRONTEND_ORIGIN` is required:
 requests that change data are rejected unless their `Origin` matches it,
 because the session cookie is sent cross-site (`SameSite=None`).
+
+## Super admin portal
+
+The admin portal is available at `/admin`; its API is mounted at `/api/admin`.
+On startup the API creates the admin schema and, if no admin exists, seeds the
+first super admin from `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`, and
+`SUPER_ADMIN_NAME` in `server/.env`. Use a strong password (at least 12
+characters with varied character types); change it on first sign-in and remove
+`SUPER_ADMIN_PASSWORD` from the environment afterwards. Admin sign-in requires
+an emailed one-time code, so configure `MAIL_USER` and `MAIL_APP_PASSWORD`.
+For local development only, `MAIL_TRANSPORT=console` logs OTPs instead.
+
+Admin sessions are separate from user sessions, use the
+`ADMIN_SESSION_HOURS` and `ADMIN_IDLE_MINUTES` limits, and can be individually
+revoked. Optionally set `ADMIN_IP_ALLOWLIST`; when behind a trusted reverse
+proxy, configure `TRUST_PROXY` so the allowlist uses the originating client IP.
+The admin CLI can reset or unlock accounts with
+`node server/admin/cli.js reset-password <email>` or
+`node server/admin/cli.js unlock <email>`.
+
+The admin API manages user/event moderation, reports, audit history, analytics,
+announcements, and platform settings. Suspended or banned accounts cannot use
+their sessions; changing account status revokes existing sessions and closes
+active sockets. Settings control points, signups, event creation, direct
+messages, maintenance mode, and the site banner. Admin tables, account-status
+columns, and required analytics tables are created or migrated automatically
+at API startup; no manual database changes are needed.

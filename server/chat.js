@@ -1,6 +1,10 @@
 import cookieParser from 'cookie-parser'
+import { extname } from 'node:path'
 import rateLimit from 'express-rate-limit'
+import multer from 'multer'
 import { Server } from 'socket.io'
+import { getSetting } from './admin/settings.js'
+import { countDaily } from './metrics.js'
 
 /*
  * Messaging rules:
@@ -8,6 +12,7 @@ import { Server } from 'socket.io'
  * - Direct messages: accepted friends, or a host and an approved attendee of
  *   the same active event. Attendees who aren't friends use the live chat.
  * - A block in either direction stops all direct messages.
+ * - A report pauses the reported sender's direct messages to that reporter for five hours.
  * Rights are checked on every send because friendships, approvals and blocks change.
  */
 
@@ -16,10 +21,52 @@ const PAGE_SIZE = 50
 const AFTER_PAGE_SIZE = 100
 const EVENT_CHAT_RETENTION_HOURS = 24
 const DIRECT_MESSAGE_RETENTION_DAYS = 90
+const REPORT_MESSAGE_COOLDOWN_HOURS = 5
 const REPORT_REASONS = ['harassment', 'spam', 'inappropriate', 'safety', 'other']
 const NO_MESSAGING = "You can't message this person right now."
 
 let io = null
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024, files: 5 },
+})
+const ATTACHMENT_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+  'video/mp4', 'video/webm', 'video/quicktime',
+  'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav',
+  'application/pdf', 'text/plain', 'text/csv',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+])
+const ATTACHMENT_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mov',
+  '.ogg', '.m4a', '.mp3', '.wav', '.pdf', '.txt', '.csv', '.doc',
+  '.docx', '.xlsx', '.pptx',
+])
+const ATTACHMENT_EXTENSIONS_BY_TYPE = {
+  'image/jpeg': ['.jpg', '.jpeg'],
+  'image/png': ['.png'],
+  'image/webp': ['.webp'],
+  'image/gif': ['.gif'],
+  'video/mp4': ['.mp4'],
+  'video/webm': ['.webm'],
+  'video/quicktime': ['.mov'],
+  'audio/webm': ['.webm'],
+  'audio/ogg': ['.ogg'],
+  'audio/mp4': ['.m4a'],
+  'audio/mpeg': ['.mp3'],
+  'audio/wav': ['.wav'],
+  'application/pdf': ['.pdf'],
+  'text/plain': ['.txt'],
+  'text/csv': ['.csv'],
+  'application/msword': ['.doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+}
+const PRESENCE_ROOM_PREFIX = 'presence:'
 
 const messageLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -92,6 +139,7 @@ export async function createChatTables(pool) {
       conversation_id BIGINT UNSIGNED NOT NULL,
       sender_client_id BIGINT UNSIGNED NOT NULL,
       message_text VARCHAR(2000) NOT NULL,
+      deleted_for_everyone_at DATETIME NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (message_id),
       KEY idx_direct_messages_conversation (conversation_id, message_id),
@@ -100,6 +148,22 @@ export async function createChatTables(pool) {
         REFERENCES direct_conversations (conversation_id) ON DELETE CASCADE,
       CONSTRAINT fk_direct_message_sender FOREIGN KEY (sender_client_id)
         REFERENCES clients (client_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `)
+  await addMissingMessageColumn(pool, 'activity_chat_messages')
+  await addMissingMessageColumn(pool, 'direct_messages')
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_message_user_deletions (
+      source ENUM('event', 'direct') NOT NULL,
+      thread_id VARCHAR(80) NOT NULL,
+      message_id BIGINT UNSIGNED NOT NULL,
+      client_id BIGINT UNSIGNED NOT NULL,
+      delete_at DATETIME NOT NULL,
+      notified_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (source, message_id, client_id),
+      KEY idx_chat_user_deletion_due (delete_at, notified_at),
+      KEY idx_chat_user_deletion_client (client_id, source, thread_id)
     ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `)
   await pool.query(`
@@ -133,6 +197,51 @@ export async function createChatTables(pool) {
         REFERENCES clients (client_id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS report_message_restrictions (
+      reporter_client_id BIGINT UNSIGNED NOT NULL,
+      reported_client_id BIGINT UNSIGNED NOT NULL,
+      expires_at DATETIME NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (reporter_client_id, reported_client_id),
+      KEY idx_report_message_restrictions_expiry (expires_at),
+      CONSTRAINT fk_report_restriction_reporter FOREIGN KEY (reporter_client_id)
+        REFERENCES clients (client_id) ON DELETE CASCADE,
+      CONSTRAINT fk_report_restriction_reported FOREIGN KEY (reported_client_id)
+        REFERENCES clients (client_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_attachments (
+      attachment_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      source ENUM('event', 'direct') NOT NULL,
+      source_id VARCHAR(80) NOT NULL,
+      message_id BIGINT UNSIGNED NOT NULL,
+      uploader_client_id BIGINT UNSIGNED NOT NULL,
+      file_name VARCHAR(255) NOT NULL,
+      mime_type VARCHAR(100) NOT NULL,
+      file_size INT UNSIGNED NOT NULL,
+      file_data LONGBLOB NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (attachment_id),
+      KEY idx_chat_attachments_message (source, message_id),
+      KEY idx_chat_attachments_source (source, source_id),
+      CONSTRAINT fk_chat_attachment_uploader FOREIGN KEY (uploader_client_id)
+        REFERENCES clients (client_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `)
+}
+
+async function addMissingMessageColumn(pool, table) {
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'deleted_for_everyone_at'`,
+    [table],
+  )
+  if (!rows.length) {
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN deleted_for_everyone_at DATETIME NULL`)
+  }
 }
 
 /*
@@ -141,8 +250,30 @@ export async function createChatTables(pool) {
  */
 export async function cleanupExpiredMessages(pool) {
   await pool.execute(
+    `DELETE d FROM chat_message_user_deletions d
+     JOIN activity_chat_messages m ON d.source = 'event' AND d.message_id = m.message_id
+     WHERE m.created_at < NOW() - INTERVAL ${EVENT_CHAT_RETENTION_HOURS} HOUR`,
+  )
+  await pool.execute(
+    `DELETE a FROM chat_attachments a
+     JOIN activity_chat_messages m ON m.message_id = a.message_id
+     WHERE a.source = 'event'
+       AND m.created_at < NOW() - INTERVAL ${EVENT_CHAT_RETENTION_HOURS} HOUR`,
+  )
+  await pool.execute(
     `DELETE FROM activity_chat_messages
      WHERE created_at < NOW() - INTERVAL ${EVENT_CHAT_RETENTION_HOURS} HOUR`,
+  )
+  await pool.execute(
+    `DELETE d FROM chat_message_user_deletions d
+     JOIN direct_messages m ON d.source = 'direct' AND d.message_id = m.message_id
+     WHERE m.created_at < NOW() - INTERVAL ${DIRECT_MESSAGE_RETENTION_DAYS} DAY`,
+  )
+  await pool.execute(
+    `DELETE a FROM chat_attachments a
+     JOIN direct_messages m ON m.message_id = a.message_id
+     WHERE a.source = 'direct'
+       AND m.created_at < NOW() - INTERVAL ${DIRECT_MESSAGE_RETENTION_DAYS} DAY`,
   )
   await pool.execute(
     `DELETE FROM direct_messages
@@ -183,6 +314,82 @@ function requireJson(request, response, next) {
   return response.status(415).json({ message: 'Send this request as JSON.' })
 }
 
+function messagePayload(request) {
+  if (!request.is('application/json') && !request.is('multipart/form-data')) {
+    return { error: 'Send messages as JSON or multipart form data.' }
+  }
+  const rawText = typeof request.body?.text === 'string' ? request.body.text : ''
+  const text = cleanMessageText(rawText)
+  const files = request.files || []
+  if (rawText.trim() && !text) {
+    return { error: `Message must be between 1 and ${MESSAGE_MAX_LENGTH} characters.` }
+  }
+  if (!text && files.length === 0) return { error: 'Write a message or attach a file.' }
+  if (files.reduce((total, file) => total + file.size, 0) > 24 * 1024 * 1024) {
+    return { error: 'Attachments must total 24 MB or less per message.' }
+  }
+  for (const file of files) {
+    file.mimetype = file.mimetype.split(';', 1)[0].trim().toLowerCase()
+    if (!isValidAttachment(file)) {
+      return { error: 'That file type is not supported or the file contents are invalid.' }
+    }
+  }
+  return { text: text || '', files }
+}
+
+function isValidAttachment(file) {
+  const extension = extname(file.originalname).toLowerCase()
+  if (!ATTACHMENT_TYPES.has(file.mimetype) ||
+      !ATTACHMENT_EXTENSIONS.has(extension) ||
+      !ATTACHMENT_EXTENSIONS_BY_TYPE[file.mimetype]?.includes(extension)) return false
+  const bytes = file.buffer
+  const startsWith = (...values) => values.some((value) => bytes.subarray(0, value.length).equals(value))
+  const hasFtyp = bytes.length > 12 && bytes.toString('ascii', 4, 8) === 'ftyp'
+  switch (file.mimetype) {
+    case 'image/jpeg': return startsWith(Buffer.from([0xff, 0xd8, 0xff]))
+    case 'image/png': return startsWith(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    case 'image/webp': return bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+    case 'image/gif': return startsWith(Buffer.from('GIF87a'), Buffer.from('GIF89a'))
+    case 'video/mp4':
+    case 'video/quicktime':
+    case 'audio/mp4': return hasFtyp
+    case 'video/webm':
+    case 'audio/webm': return startsWith(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
+    case 'audio/ogg': return startsWith(Buffer.from('OggS'))
+    case 'audio/wav': return bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WAVE'
+    case 'audio/mpeg': return startsWith(Buffer.from('ID3')) || (bytes.length > 1 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
+    case 'application/pdf': return startsWith(Buffer.from('%PDF-'))
+    case 'application/msword': return startsWith(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))
+    case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+    case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+      return startsWith(Buffer.from('PK\x03\x04'))
+    case 'text/plain':
+    case 'text/csv':
+      return !bytes.subarray(0, Math.min(bytes.length, 1024)).includes(0)
+    default: return false
+  }
+}
+
+async function storeAttachments(db, source, sourceId, messageId, clientId, files) {
+  for (const file of files) {
+    const fileName = [...file.originalname]
+      .map((character) => /[<>:"/\\|?*]/.test(character) || character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+        ? '_'
+        : character)
+      .join('')
+      .trim()
+      .replace(/^[. ]+|[. ]+$/g, '')
+      .slice(0, 255) || 'attachment'
+    await db.execute(
+      `INSERT INTO chat_attachments
+         (source, source_id, message_id, uploader_client_id, file_name, mime_type, file_size, file_data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [source, String(sourceId), messageId, clientId, fileName, file.mimetype, file.size, file.buffer],
+    )
+  }
+}
+
 function messageCursor(query) {
   if (query.after !== undefined) return isId(query.after) ? { after: query.after } : null
   if (query.before !== undefined) return isId(query.before) ? { before: query.before } : null
@@ -200,10 +407,12 @@ function cursorQuery(cursor) {
 }
 
 /* Rows are fetched with limit + 1 so `hasMore` needs no second query. */
-function messagePage(rows, cursor, limit) {
+async function messagePage(rows, cursor, limit, db, source) {
   const page = rows.slice(0, limit)
+  const messages = page.map(chatMessage)
+  await addMessageAttachments(db, source, messages)
   return {
-    messages: (cursor.after ? page : page.reverse()).map(chatMessage),
+    messages: cursor.after ? messages : messages.reverse(),
     hasMore: rows.length > limit,
   }
 }
@@ -217,25 +426,61 @@ function chatSender(row) {
 }
 
 function chatMessage(row) {
+  const deletedForEveryone = Boolean(row.deleted_for_everyone_at)
   return {
     id: String(row.message_id),
-    text: row.message_text,
+    text: deletedForEveryone ? '' : row.message_text,
     createdAt: new Date(Number(row.created_unix) * 1000).toISOString(),
     sender: chatSender(row),
+    attachments: [],
+    deletedForEveryone,
   }
 }
 
 const MESSAGE_COLUMNS = `m.message_id, m.message_text, UNIX_TIMESTAMP(m.created_at) AS created_unix,
-  c.client_id, c.full_name, c.profile_photo_mime`
+  m.deleted_for_everyone_at, c.client_id, c.full_name, c.profile_photo_mime`
 
-async function loadMessage(db, table, messageId) {
+function attachmentMetadata(row) {
+  return {
+    id: String(row.attachment_id),
+    name: row.file_name,
+    mimeType: row.mime_type,
+    size: Number(row.file_size),
+    url: `/api/chat/attachments/${row.attachment_id}`,
+  }
+}
+
+async function addMessageAttachments(db, source, messages) {
+  const visibleMessages = messages.filter((message) => !message.deletedForEveryone)
+  if (!visibleMessages.length) return messages
+  const ids = visibleMessages.map((message) => message.id)
+  const [rows] = await db.execute(
+    `SELECT attachment_id, message_id, file_name, mime_type, file_size
+     FROM chat_attachments
+     WHERE source = ? AND message_id IN (${ids.map(() => '?').join(',')})
+     ORDER BY attachment_id`,
+    [source, ...ids],
+  )
+  const byMessage = new Map()
+  for (const row of rows) {
+    const key = String(row.message_id)
+    if (!byMessage.has(key)) byMessage.set(key, [])
+    byMessage.get(key).push(attachmentMetadata(row))
+  }
+  for (const message of visibleMessages) message.attachments = byMessage.get(message.id) || []
+  return messages
+}
+
+async function loadMessage(db, table, source, messageId) {
   const [rows] = await db.execute(
     `SELECT ${MESSAGE_COLUMNS}
-     FROM ${table} m JOIN clients c ON c.client_id = m.sender_client_id
+     FROM ${table} m JOIN clients c
+       ON c.client_id = m.sender_client_id AND c.account_status = 'active'
      WHERE m.message_id = ? LIMIT 1`,
     [messageId],
   )
-  return chatMessage(rows[0])
+  const [message] = await addMessageAttachments(db, source, [chatMessage(rows[0])])
+  return message
 }
 
 function lastMessage(row) {
@@ -279,9 +524,26 @@ export async function isBlockedBetween(db, firstId, secondId) {
  */
 export async function messagingRights(db, senderId, recipientId) {
   if (senderId === recipientId) return { allowed: false, reason: 'not_connected' }
+  const [accounts] = await db.execute(
+    `SELECT client_id FROM clients
+     WHERE client_id IN (?, ?) AND account_status = 'active'`,
+    [senderId, recipientId],
+  )
+  if (accounts.length !== 2) return { allowed: false, reason: 'unavailable' }
   const blocks = await blockStatus(db, senderId, recipientId)
   if (blocks.byMe) return { allowed: false, reason: 'blocked' }
   if (blocks.byThem) return { allowed: false, reason: 'unavailable' }
+
+  const [restrictions] = await db.execute(
+    `SELECT expires_at FROM report_message_restrictions
+     WHERE reporter_client_id = ? AND reported_client_id = ?
+       AND expires_at > UTC_TIMESTAMP()
+     LIMIT 1`,
+    [recipientId, senderId],
+  )
+  if (restrictions[0]) {
+    return { allowed: false, reason: 'report_cooldown', sendAvailableAt: restrictions[0].expires_at }
+  }
 
   const [friends] = await db.execute(
     `SELECT 1 FROM friendships
@@ -315,6 +577,8 @@ async function eventChatAccess(db, activityPublicId, clientId) {
                 AND jr.applicant_client_id = ? AND jr.status = 'approved') AS is_attendee
      FROM activities a
      WHERE a.public_id = ? AND a.status = 'active' AND a.ends_at > UTC_TIMESTAMP()
+       AND EXISTS (SELECT 1 FROM clients hc
+                   WHERE hc.client_id = a.host_client_id AND hc.account_status = 'active')
      LIMIT 1`,
     [clientId, activityPublicId],
   )
@@ -326,6 +590,28 @@ async function eventChatAccess(db, activityPublicId, clientId) {
   }
 }
 
+async function eventMessageRestriction(db, activityId, senderId) {
+  const [rows] = await db.execute(
+    `SELECT r.expires_at
+     FROM report_message_restrictions r
+     WHERE r.reported_client_id = ? AND r.expires_at > UTC_TIMESTAMP()
+       AND (
+         r.reporter_client_id = (
+           SELECT host_client_id FROM activities WHERE activity_id = ?
+         )
+         OR EXISTS (
+           SELECT 1 FROM activity_join_requests jr
+           WHERE jr.activity_id = ? AND jr.applicant_client_id = r.reporter_client_id
+             AND jr.status = 'approved'
+         )
+       )
+     ORDER BY r.expires_at DESC
+     LIMIT 1`,
+    [senderId, activityId, activityId],
+  )
+  return rows[0] ?? null
+}
+
 /* Current members, minus anyone who has blocked the sender. */
 async function eventChatRecipients(db, activityId, senderId) {
   const [rows] = await db.execute(
@@ -335,6 +621,7 @@ async function eventChatRecipients(db, activityId, senderId) {
        SELECT applicant_client_id FROM activity_join_requests
        WHERE activity_id = ? AND status = 'approved'
      ) members
+     JOIN clients c ON c.client_id = members.client_id AND c.account_status = 'active'
      WHERE NOT EXISTS (
        SELECT 1 FROM user_blocks b
        WHERE b.blocker_client_id = members.client_id AND b.blocked_client_id = ?
@@ -342,6 +629,144 @@ async function eventChatRecipients(db, activityId, senderId) {
     [activityId, activityId, senderId],
   )
   return rows.map((row) => Number(row.client_id))
+}
+
+function mysqlDateTime(date) {
+  return date.toISOString().slice(0, 19).replace('T', ' ')
+}
+
+function scheduledDeleteDate(value) {
+  if (typeof value !== 'string') return null
+  const date = new Date(value)
+  const delay = date.getTime() - Date.now()
+  return Number.isNaN(delay) || delay < 60 * 1000 || delay > 30 * 24 * 60 * 60 * 1000
+    ? null
+    : date
+}
+
+async function applyMessageDeletion({
+  pool,
+  request,
+  response,
+  source,
+  threadId,
+  messageId,
+  table,
+  threadColumn,
+  threadValue,
+  peerId = null,
+  activity = null,
+}) {
+  if (!isId(messageId)) {
+    return response.status(400).json({ message: 'Invalid message.' })
+  }
+  if (!request.is('application/json')) {
+    return response.status(415).json({ message: 'Send this request as JSON.' })
+  }
+
+  const action = request.body?.action
+  if (!['for_me', 'schedule_for_me', 'for_everyone'].includes(action)) {
+    return response.status(400).json({ message: 'Choose a valid delete option.' })
+  }
+  const deleteAt = action === 'schedule_for_me'
+    ? scheduledDeleteDate(request.body?.deleteAt)
+    : null
+  if (action === 'schedule_for_me' && !deleteAt) {
+    return response.status(400).json({ message: 'Choose a delete time between one minute and 30 days from now.' })
+  }
+
+  const [rows] = await pool.execute(
+    `SELECT m.message_id, m.sender_client_id, m.deleted_for_everyone_at,
+            UNIX_TIMESTAMP(m.created_at) AS created_unix
+     FROM ${table} m
+     WHERE m.${threadColumn} = ? AND m.message_id = ?
+     LIMIT 1`,
+    [threadValue, messageId],
+  )
+  const message = rows[0]
+  if (!message || message.deleted_for_everyone_at) {
+    return response.status(404).json({ message: 'This message is no longer available.' })
+  }
+  if (action === 'for_everyone') {
+    const sentAt = Number(message.created_unix) * 1000
+    if (Number(message.sender_client_id) !== request.clientId) {
+      return response.status(403).json({ message: 'You can only delete your own messages for everyone.' })
+    }
+    if (Date.now() - sentAt > 15 * 60 * 1000 || Date.now() < sentAt) {
+      return response.status(403).json({ message: 'Messages can only be deleted for everyone within 15 minutes of sending.' })
+    }
+    const [updated] = await pool.execute(
+      `UPDATE ${table}
+       SET deleted_for_everyone_at = NOW()
+       WHERE ${threadColumn} = ? AND message_id = ?
+         AND sender_client_id = ? AND deleted_for_everyone_at IS NULL
+         AND created_at >= NOW() - INTERVAL 15 MINUTE`,
+      [threadValue, messageId, request.clientId],
+    )
+    if (updated.affectedRows !== 1) {
+      return response.status(409).json({ message: 'This message can no longer be deleted for everyone.' })
+    }
+    await pool.execute(
+      'DELETE FROM chat_attachments WHERE source = ? AND message_id = ?',
+      [source, messageId],
+    )
+    const recipients = source === 'event'
+      ? await eventChatRecipients(pool, activity.activity_id, request.clientId)
+      : [request.clientId, peerId]
+    emitToUsers(recipients, 'message:deleted-for-everyone', {
+      kind: source,
+      threadId: String(threadId),
+      messageId: String(messageId),
+    })
+    return response.json({ action, messageId: String(messageId) })
+  }
+
+  if (action === 'for_me') {
+    await pool.execute(
+      `INSERT INTO chat_message_user_deletions
+         (source, thread_id, message_id, client_id, delete_at, notified_at)
+       VALUES (?, ?, ?, ?, NOW(), NOW())
+       ON DUPLICATE KEY UPDATE delete_at = NOW(), notified_at = NOW()`,
+      [source, String(threadId), messageId, request.clientId],
+    )
+    emitToUsers([request.clientId], 'message:deleted-for-me', {
+      kind: source,
+      threadId: String(threadId),
+      messageId: String(messageId),
+    })
+    return response.json({ action, messageId: String(messageId) })
+  }
+
+  await pool.execute(
+    `INSERT INTO chat_message_user_deletions
+       (source, thread_id, message_id, client_id, delete_at, notified_at)
+     VALUES (?, ?, ?, ?, ?, NULL)
+     ON DUPLICATE KEY UPDATE delete_at = VALUES(delete_at), notified_at = NULL`,
+    [source, String(threadId), messageId, request.clientId, mysqlDateTime(deleteAt)],
+  )
+  response.json({ action, messageId: String(messageId), deleteAt: deleteAt.toISOString() })
+}
+
+async function processScheduledMessageDeletions(pool) {
+  if (!io) return
+  const [rows] = await pool.execute(
+    `SELECT source, thread_id, message_id, client_id
+     FROM chat_message_user_deletions
+     WHERE delete_at <= NOW() AND notified_at IS NULL
+     ORDER BY delete_at ASC LIMIT 100`,
+  )
+  for (const row of rows) {
+    emitToUsers([row.client_id], 'message:deleted-for-me', {
+      kind: row.source,
+      threadId: row.thread_id,
+      messageId: String(row.message_id),
+    })
+    await pool.execute(
+      `UPDATE chat_message_user_deletions SET notified_at = NOW()
+       WHERE source = ? AND message_id = ? AND client_id = ? AND notified_at IS NULL`,
+      [row.source, row.message_id, row.client_id],
+    )
+  }
 }
 
 async function relationshipBetween(db, meId, otherId) {
@@ -374,6 +799,18 @@ export function emitToUsers(clientIds, event, payload) {
   const ids = [...new Set(clientIds)]
   if (!io || !ids.length) return
   io.to(ids.map(userRoom)).emit(event, payload)
+}
+
+export function disconnectUser(clientId, reason) {
+  if (!io) return
+  io.to(userRoom(clientId)).emit('account:ended', { reason })
+  setTimeout(() => io.in(userRoom(clientId)).disconnectSockets(true), 300).unref()
+}
+
+export function getSocketStats() {
+  if (!io) return { connections: 0, users: 0 }
+  const users = [...io.of('/').adapter.rooms.keys()].filter((room) => room.startsWith('user:')).length
+  return { connections: io.engine.clientsCount, users }
 }
 
 /* Pushes after a commit are best effort; the change itself already succeeded. */
@@ -424,7 +861,7 @@ export async function notifyEventClosed(db, activityId, activityPublicId, hostId
  * Receive-only: clients never send events, so there are no handlers to
  * authorize. Every push goes to personal rooms chosen by the API per message.
  */
-export function attachChatSocket(httpServer, { cookieName, frontendOrigins, isAllowedOrigin, verifySessionToken }) {
+export function attachChatSocket(httpServer, { cookieName, frontendOrigins, isAllowedOrigin, resolveSession }) {
   io = new Server(httpServer, {
     serveClient: false,
     ...(frontendOrigins.length && { cors: { origin: frontendOrigins, credentials: true } }),
@@ -439,18 +876,53 @@ export function attachChatSocket(httpServer, { cookieName, frontendOrigins, isAl
     },
   })
   io.engine.use(cookieParser())
-  io.use((socket, next) => {
-    const session = verifySessionToken(socket.request.cookies?.[cookieName])
-    if (!session) return next(new Error('unauthorized'))
-    socket.data.clientId = session.clientId
-    socket.data.expiresAt = session.expiresAt
-    return next()
+  function isOnline(clientId) {
+    return io.in(userRoom(clientId)).fetchSockets().then((sockets) => sockets.length > 0)
+  }
+  io.use(async (socket, next) => {
+    try {
+      const token = socket.request.cookies?.[cookieName]
+      const session = token ? await resolveSession(token) : null
+      if (!session?.clientId) return next(new Error('unauthorized'))
+      socket.data.clientId = session.clientId
+      socket.data.expiresAt = session.expiresAt
+      return next()
+    } catch (error) {
+      console.error('Socket authentication failed:', error)
+      return next(new Error('unauthorized'))
+    }
   })
   io.on('connection', (socket) => {
-    socket.join(userRoom(socket.data.clientId))
+    const clientId = socket.data.clientId
+    socket.join(userRoom(clientId))
+    io.to(`${PRESENCE_ROOM_PREFIX}${clientId}`).emit('presence:update', { userId: clientId, online: true })
+    const watched = new Set()
+    socket.on('presence:watch', async (payload) => {
+      const rawId = String(payload?.userId ?? '')
+      if (!/^\d{1,19}$/.test(rawId)) return
+      const targetId = Number(rawId)
+      if (!Number.isSafeInteger(targetId) || targetId <= 0 || targetId === clientId || watched.size >= 50) return
+      watched.add(targetId)
+      await socket.join(`${PRESENCE_ROOM_PREFIX}${targetId}`)
+      socket.emit('presence:update', { userId: targetId, online: await isOnline(targetId) })
+    })
+    socket.on('presence:unwatch', async (payload) => {
+      const rawId = String(payload?.userId ?? '')
+      if (!/^\d{1,19}$/.test(rawId)) return
+      const targetId = Number(rawId)
+      if (!watched.delete(targetId)) return
+      await socket.leave(`${PRESENCE_ROOM_PREFIX}${targetId}`)
+    })
     const remaining = Math.min(Math.max(socket.data.expiresAt - Date.now(), 0), 2 ** 31 - 1)
     const expiryTimer = setTimeout(() => socket.disconnect(true), remaining)
-    socket.on('disconnect', () => clearTimeout(expiryTimer))
+    socket.on('disconnect', () => {
+      clearTimeout(expiryTimer)
+      setImmediate(async () => {
+        if (!(await isOnline(clientId))) {
+          io.to(`${PRESENCE_ROOM_PREFIX}${clientId}`).emit('presence:update', { userId: clientId, online: false })
+        }
+      })
+    })
   })
   return io
 }
@@ -462,15 +934,21 @@ export function attachChatSocket(httpServer, { cookieName, frontendOrigins, isAl
 async function loadInbox(pool, meId) {
   const [eventRows] = await pool.execute(
     `SELECT a.public_id, a.title, a.banner_image, a.ends_at, a.host_client_id,
-            lm.message_id AS last_message_id, lm.message_text AS last_text,
+            lm.message_id AS last_message_id,
+            CASE WHEN lm.deleted_for_everyone_at IS NULL THEN lm.message_text
+                 ELSE 'This message was deleted' END AS last_text,
             UNIX_TIMESTAMP(lm.created_at) AS last_unix,
             lm.sender_client_id AS last_sender_id, lc.full_name AS last_sender_name,
             (SELECT COUNT(*) FROM activity_chat_messages um
              WHERE um.activity_id = a.activity_id AND um.sender_client_id <> ?
                AND um.message_id > COALESCE(r.last_read_message_id, 0)
                AND um.created_at >= NOW() - INTERVAL ${EVENT_CHAT_RETENTION_HOURS} HOUR
+               AND um.deleted_for_everyone_at IS NULL
                AND NOT EXISTS (SELECT 1 FROM user_blocks b
                                WHERE b.blocker_client_id = ? AND b.blocked_client_id = um.sender_client_id)
+               AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                               WHERE d.source = 'event' AND d.message_id = um.message_id
+                                 AND d.client_id = ? AND d.delete_at <= NOW())
             ) AS unread_count
      FROM activities a
      LEFT JOIN activity_chat_reads r ON r.activity_id = a.activity_id AND r.client_id = ?
@@ -480,6 +958,9 @@ async function loadInbox(pool, meId) {
          AND m2.created_at >= NOW() - INTERVAL ${EVENT_CHAT_RETENTION_HOURS} HOUR
          AND NOT EXISTS (SELECT 1 FROM user_blocks b
                          WHERE b.blocker_client_id = ? AND b.blocked_client_id = m2.sender_client_id)
+         AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                         WHERE d.source = 'event' AND d.message_id = m2.message_id
+                           AND d.client_id = ? AND d.delete_at <= NOW())
      )
      LEFT JOIN clients lc ON lc.client_id = lm.sender_client_id
      WHERE a.status = 'active' AND a.ends_at > UTC_TIMESTAMP()
@@ -488,16 +969,22 @@ async function loadInbox(pool, meId) {
          WHERE jr.activity_id = a.activity_id
            AND jr.applicant_client_id = ? AND jr.status = 'approved'))
      ORDER BY COALESCE(lm.message_id, 0) DESC, a.starts_at ASC`,
-    [meId, meId, meId, meId, meId, meId],
+    [meId, meId, meId, meId, meId, meId, meId, meId],
   )
 
   const [directRows] = await pool.execute(
     `SELECT other.client_id, other.full_name, other.profile_photo_mime,
-            lm.message_id AS last_message_id, lm.message_text AS last_text,
+            lm.message_id AS last_message_id,
+            CASE WHEN lm.deleted_for_everyone_at IS NULL THEN lm.message_text
+                 ELSE 'This message was deleted' END AS last_text,
             UNIX_TIMESTAMP(lm.created_at) AS last_unix, lm.sender_client_id AS last_sender_id,
             (SELECT COUNT(*) FROM direct_messages um
              WHERE um.conversation_id = dc.conversation_id AND um.sender_client_id <> ?
                AND um.message_id > IF(dc.client_low_id = ?, dc.low_last_read_id, dc.high_last_read_id)
+               AND um.deleted_for_everyone_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                               WHERE d.source = 'direct' AND d.message_id = um.message_id
+                                 AND d.client_id = ? AND d.delete_at <= NOW())
             ) AS unread_count,
             EXISTS(SELECT 1 FROM user_blocks b
                    WHERE b.blocker_client_id = ? AND b.blocked_client_id = other.client_id) AS blocked_by_me,
@@ -516,13 +1003,18 @@ async function loadInbox(pool, meId) {
      FROM direct_conversations dc
      JOIN clients other
        ON other.client_id = IF(dc.client_low_id = ?, dc.client_high_id, dc.client_low_id)
+       AND other.account_status = 'active'
      JOIN direct_messages lm ON lm.message_id = (
-       SELECT MAX(m2.message_id) FROM direct_messages m2 WHERE m2.conversation_id = dc.conversation_id
+       SELECT MAX(m2.message_id) FROM direct_messages m2
+       WHERE m2.conversation_id = dc.conversation_id
+         AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                         WHERE d.source = 'direct' AND d.message_id = m2.message_id
+                           AND d.client_id = ? AND d.delete_at <= NOW())
      )
      WHERE dc.client_low_id = ? OR dc.client_high_id = ?
      ORDER BY lm.message_id DESC
      LIMIT 100`,
-    [meId, meId, meId, meId, meId, meId, meId, meId, meId],
+    [meId, meId, meId, meId, meId, meId, meId, meId, meId, meId, meId],
   )
 
   const eventChats = eventRows.map((row) => ({
@@ -558,6 +1050,13 @@ async function loadInbox(pool, meId) {
 /* -------------------------------------------------------------------------- */
 
 export function registerChatRoutes(app, { pool, requireSession }) {
+  const scheduledDeletionTimer = setInterval(() => {
+    processScheduledMessageDeletions(pool).catch((error) =>
+      console.error('Failed to process scheduled chat message deletions:', error),
+    )
+  }, 15 * 1000)
+  scheduledDeletionTimer.unref()
+
   /* ---------------------------- Event live chat --------------------------- */
 
   app.get('/api/activities/:id/chat', requireSession, async (request, response, next) => {
@@ -571,48 +1070,109 @@ export function registerChatRoutes(app, { pool, requireSession }) {
       const [rows] = await pool.execute(
         `SELECT ${MESSAGE_COLUMNS}
          FROM activity_chat_messages m
-         JOIN clients c ON c.client_id = m.sender_client_id
+         JOIN clients c ON c.client_id = m.sender_client_id AND c.account_status = 'active'
          WHERE m.activity_id = ?
            AND m.created_at >= NOW() - INTERVAL ${EVENT_CHAT_RETENTION_HOURS} HOUR
            ${page.where}
            AND NOT EXISTS (SELECT 1 FROM user_blocks b
                            WHERE b.blocker_client_id = ? AND b.blocked_client_id = m.sender_client_id)
+           AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                           WHERE d.source = 'event' AND d.message_id = m.message_id
+                             AND d.client_id = ? AND d.delete_at <= NOW())
          ORDER BY m.message_id ${page.order}
          LIMIT ${page.limit + 1}`,
-        [access.activity.activity_id, ...page.params, request.clientId],
+        [access.activity.activity_id, ...page.params, request.clientId, request.clientId],
       )
       response.set('Cache-Control', 'private, no-store')
+      const restriction = await eventMessageRestriction(pool, access.activity.activity_id, request.clientId)
       response.json({
-        ...messagePage(rows, cursor, page.limit),
+        ...await messagePage(rows, cursor, page.limit, pool, 'event'),
         title: access.activity.title,
-        canSend: true,
-        reason: null,
+        canSend: !restriction,
+        reason: restriction ? 'report_cooldown' : null,
+        sendAvailableAt: restriction?.expires_at ?? null,
       })
     } catch (error) {
       next(error)
     }
   })
 
-  app.post('/api/activities/:id/chat', requireSession, requireJson, messageLimiter, async (request, response, next) => {
-    const text = cleanMessageText(request.body?.text)
-    if (!text) return response.status(400).json({ message: `Message must be between 1 and ${MESSAGE_MAX_LENGTH} characters.` })
+  app.delete('/api/activities/:id/chat/:messageId', requireSession, async (request, response, next) => {
+    try {
+      const access = await eventChatAccess(pool, request.params.id, request.clientId)
+      if (!access.activity || !access.allowed) {
+        return response.status(404).json({ message: 'Chat not found.' })
+      }
+      await applyMessageDeletion({
+        pool,
+        request,
+        response,
+        source: 'event',
+        threadId: access.activity.public_id,
+        messageId: request.params.messageId,
+        table: 'activity_chat_messages',
+        threadColumn: 'activity_id',
+        threadValue: access.activity.activity_id,
+        activity: access.activity,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/activities/:id/chat', requireSession, messageLimiter, attachmentUpload.array('files', 5), async (request, response, next) => {
+    const payload = messagePayload(request)
+    if (payload.error) return response.status(400).json({ message: payload.error })
     try {
       const access = await eventChatAccess(pool, request.params.id, request.clientId)
       if (!access.activity) return response.status(404).json({ message: 'Event is no longer active.' })
       if (!access.allowed) return response.status(403).json({ message: 'Live chat is available only to the host and approved attendees.' })
-      const [result] = await pool.execute(
-        `INSERT INTO activity_chat_messages (activity_id, sender_client_id, message_text)
-         VALUES (?, ?, ?)`,
-        [access.activity.activity_id, request.clientId, text],
+      const connection = await pool.getConnection()
+      let messageId
+      try {
+        await connection.beginTransaction()
+        const restriction = await eventMessageRestriction(
+          connection,
+          access.activity.activity_id,
+          request.clientId,
+        )
+        if (restriction) {
+          await connection.rollback()
+          return response.status(403).json({
+            message: NO_MESSAGING,
+            reason: 'report_cooldown',
+            sendAvailableAt: restriction.expires_at,
+          })
+        }
+        const [result] = await connection.execute(
+          `INSERT INTO activity_chat_messages (activity_id, sender_client_id, message_text)
+           VALUES (?, ?, ?)`,
+          [access.activity.activity_id, request.clientId, payload.text],
+        )
+        messageId = result.insertId
+        await storeAttachments(connection, 'event', access.activity.public_id, messageId, request.clientId, payload.files)
+        await connection.execute(
+          `INSERT INTO activity_chat_reads (activity_id, client_id, last_read_message_id)
+           VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             last_read_message_id = GREATEST(last_read_message_id, VALUES(last_read_message_id))`,
+          [access.activity.activity_id, request.clientId, messageId],
+        )
+        await connection.execute(
+          'UPDATE activities SET chat_message_count = chat_message_count + 1 WHERE activity_id = ?',
+          [access.activity.activity_id],
+        )
+        await connection.commit()
+      } catch (error) {
+        await connection.rollback()
+        throw error
+      } finally {
+        connection.release()
+      }
+      countDaily(pool, 'event_messages').catch((error) =>
+        console.error('Failed to count event chat message:', error),
       )
-      await pool.execute(
-        `INSERT INTO activity_chat_reads (activity_id, client_id, last_read_message_id)
-         VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           last_read_message_id = GREATEST(last_read_message_id, VALUES(last_read_message_id))`,
-        [access.activity.activity_id, request.clientId, result.insertId],
-      )
-      const message = await loadMessage(pool, 'activity_chat_messages', result.insertId)
+      const message = await loadMessage(pool, 'activity_chat_messages', 'event', messageId)
       const recipients = await eventChatRecipients(pool, access.activity.activity_id, request.clientId)
       emitToUsers(recipients, 'message:new', {
         kind: 'event',
@@ -718,7 +1278,8 @@ export function registerChatRoutes(app, { pool, requireSession }) {
     if (!cursor) return response.status(400).json({ message: 'Invalid message cursor.' })
     try {
       const [people] = await pool.execute(
-        'SELECT client_id, full_name, profile_photo_mime FROM clients WHERE client_id = ? LIMIT 1',
+        `SELECT client_id, full_name, profile_photo_mime FROM clients
+         WHERE client_id = ? AND account_status = 'active' LIMIT 1`,
         [personId],
       )
       if (!people[0]) return response.status(404).json({ message: 'Conversation not found.' })
@@ -739,13 +1300,16 @@ export function registerChatRoutes(app, { pool, requireSession }) {
         const [rows] = await pool.execute(
           `SELECT ${MESSAGE_COLUMNS}
            FROM direct_messages m
-           JOIN clients c ON c.client_id = m.sender_client_id
+           JOIN clients c ON c.client_id = m.sender_client_id AND c.account_status = 'active'
            WHERE m.conversation_id = ? ${query.where}
+             AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                             WHERE d.source = 'direct' AND d.message_id = m.message_id
+                               AND d.client_id = ? AND d.delete_at <= NOW())
            ORDER BY m.message_id ${query.order}
            LIMIT ${query.limit + 1}`,
-          [conversation.conversation_id, ...query.params],
+          [conversation.conversation_id, ...query.params, request.clientId],
         )
-        page = messagePage(rows, cursor, query.limit)
+        page = await messagePage(rows, cursor, query.limit, pool, 'direct')
       }
       response.set('Cache-Control', 'private, no-store')
       response.json({
@@ -754,17 +1318,53 @@ export function registerChatRoutes(app, { pool, requireSession }) {
         ...(await relationshipBetween(pool, request.clientId, personId)),
         canSend: rights.allowed,
         reason: rights.reason ?? null,
+        sendAvailableAt: rights.sendAvailableAt ?? null,
       })
     } catch (error) {
       next(error)
     }
   })
 
-  app.post('/api/dm/:personId/messages', requireSession, requireJson, messageLimiter, async (request, response, next) => {
+  app.delete('/api/dm/:personId/messages/:messageId', requireSession, async (request, response, next) => {
     const personId = personIdParam(request)
     if (!personId) return response.status(400).json({ message: 'Invalid person.' })
-    const text = cleanMessageText(request.body?.text)
-    if (!text) return response.status(400).json({ message: `Message must be between 1 and ${MESSAGE_MAX_LENGTH} characters.` })
+    try {
+      const [conversations] = await pool.execute(
+        `SELECT conversation_id FROM direct_conversations
+         WHERE client_low_id = LEAST(?, ?) AND client_high_id = GREATEST(?, ?) LIMIT 1`,
+        [request.clientId, personId, request.clientId, personId],
+      )
+      if (!conversations[0]) {
+        return response.status(404).json({ message: 'Conversation not found.' })
+      }
+      await applyMessageDeletion({
+        pool,
+        request,
+        response,
+        source: 'direct',
+        threadId: String(personId),
+        messageId: request.params.messageId,
+        table: 'direct_messages',
+        threadColumn: 'conversation_id',
+        threadValue: conversations[0].conversation_id,
+        peerId: personId,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/dm/:personId/messages', requireSession, messageLimiter, attachmentUpload.array('files', 5), async (request, response, next) => {
+    const personId = personIdParam(request)
+    if (!personId) return response.status(400).json({ message: 'Invalid person.' })
+    const payload = messagePayload(request)
+    if (payload.error) return response.status(400).json({ message: payload.error })
+    if (!getSetting('dms_enabled')) {
+      return response.status(403).json({
+        code: 'DMS_DISABLED',
+        message: 'Direct messages are paused right now. Please try again later.',
+      })
+    }
     let connection
     try {
       connection = await pool.getConnection()
@@ -785,15 +1385,19 @@ export function registerChatRoutes(app, { pool, requireSession }) {
       const [inserted] = await connection.execute(
         `INSERT INTO direct_messages (conversation_id, sender_client_id, message_text)
          VALUES (?, ?, ?)`,
-        [conversation.insertId, request.clientId, text],
+        [conversation.insertId, request.clientId, payload.text],
       )
+      await storeAttachments(connection, 'direct', personId, inserted.insertId, request.clientId, payload.files)
       const readColumn = request.clientId < personId ? 'low_last_read_id' : 'high_last_read_id'
       await connection.execute(
         `UPDATE direct_conversations SET ${readColumn} = ? WHERE conversation_id = ?`,
         [inserted.insertId, conversation.insertId],
       )
       await connection.commit()
-      const message = await loadMessage(pool, 'direct_messages', inserted.insertId)
+      countDaily(pool, 'direct_messages').catch((error) =>
+        console.error('Failed to count direct message:', error),
+      )
+      const message = await loadMessage(pool, 'direct_messages', 'direct', inserted.insertId)
       emitToUsers([personId], 'message:new', { kind: 'direct', threadId: String(request.clientId), message })
       emitToUsers([request.clientId], 'message:new', { kind: 'direct', threadId: String(personId), message })
       response.status(201).json({ message })
@@ -819,6 +1423,71 @@ export function registerChatRoutes(app, { pool, requireSession }) {
         [lastReadId, request.clientId, personId, request.clientId, personId],
       )
       response.status(204).end()
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/chat/attachments/:id', requireSession, async (request, response, next) => {
+    if (!/^\d{1,19}$/.test(request.params.id)) {
+      return response.status(400).json({ message: 'Invalid attachment.' })
+    }
+    try {
+      const [attachments] = await pool.execute(
+        `SELECT attachment_id, source, source_id, message_id, uploader_client_id, file_name, mime_type, file_data
+         FROM chat_attachments WHERE attachment_id = ? LIMIT 1`,
+        [request.params.id],
+      )
+      const attachment = attachments[0]
+      if (!attachment) return response.status(404).json({ message: 'Attachment not found.' })
+
+      if (attachment.source === 'event') {
+        const access = await eventChatAccess(pool, attachment.source_id, request.clientId)
+        if (!access.activity || !access.allowed) return response.status(404).json({ message: 'Attachment not found.' })
+        const blocks = await blockStatus(pool, request.clientId, Number(attachment.uploader_client_id))
+        if (blocks.byMe) return response.status(404).json({ message: 'Attachment not found.' })
+        const [visible] = await pool.execute(
+          `SELECT 1 FROM activity_chat_messages m
+           WHERE m.activity_id = ? AND m.message_id = ?
+             AND m.deleted_for_everyone_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                             WHERE d.source = 'event' AND d.message_id = m.message_id
+                               AND d.client_id = ? AND d.delete_at <= NOW())
+           LIMIT 1`,
+          [access.activity.activity_id, attachment.message_id, request.clientId],
+        )
+        if (!visible[0]) return response.status(404).json({ message: 'Attachment not found.' })
+      } else {
+        const [conversations] = await pool.execute(
+          `SELECT 1 FROM direct_messages m
+           JOIN direct_conversations dc ON dc.conversation_id = m.conversation_id
+           WHERE m.message_id = ? AND m.deleted_for_everyone_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM chat_message_user_deletions d
+                             WHERE d.source = 'direct' AND d.message_id = m.message_id
+                               AND d.client_id = ? AND d.delete_at <= NOW())
+             AND (
+             (dc.client_low_id = ? AND dc.client_high_id = CAST(? AS UNSIGNED))
+             OR (dc.client_high_id = ? AND dc.client_low_id = CAST(? AS UNSIGNED))
+           ) LIMIT 1`,
+          [attachment.message_id, request.clientId, request.clientId, attachment.source_id, request.clientId, attachment.source_id],
+        )
+        if (!conversations[0]) return response.status(404).json({ message: 'Attachment not found.' })
+      }
+
+      const safeName = attachment.file_name
+        .replace(/[^\x20-\x7e]/g, '_')
+        .replace(/[\r\n"]/g, '_')
+      const disposition = attachment.mime_type.startsWith('image/') ||
+        attachment.mime_type.startsWith('audio/') || attachment.mime_type.startsWith('video/')
+        ? 'inline'
+        : 'attachment'
+      response.set({
+        'Cache-Control': 'private, no-store',
+        'Content-Type': attachment.mime_type,
+        'Content-Disposition': `${disposition}; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(attachment.file_name)}`,
+        'X-Content-Type-Options': 'nosniff',
+      })
+      response.send(attachment.file_data)
     } catch (error) {
       next(error)
     }
@@ -944,11 +1613,12 @@ export function registerChatRoutes(app, { pool, requireSession }) {
     if (!['event', 'direct'].includes(source) || !isId(messageId) || !REPORT_REASONS.includes(reason)) {
       return response.status(400).json({ message: 'Choose a message and a reason to report.' })
     }
+    let connection
     try {
       let message
       if (source === 'event') {
         const [rows] = await pool.execute(
-          `SELECT m.message_text, m.sender_client_id, a.public_id
+          `SELECT m.message_text, m.sender_client_id, a.public_id, a.activity_id
            FROM activity_chat_messages m JOIN activities a ON a.activity_id = m.activity_id
            WHERE m.message_id = ? LIMIT 1`,
           [messageId],
@@ -970,15 +1640,92 @@ export function registerChatRoutes(app, { pool, requireSession }) {
       if (Number(message.sender_client_id) === request.clientId) {
         return response.status(400).json({ message: "You can't report your own message." })
       }
-      await pool.execute(
+      connection = await pool.getConnection()
+      await connection.beginTransaction()
+      const [report] = await connection.execute(
         `INSERT IGNORE INTO message_reports
            (reporter_client_id, reported_client_id, source, message_id, message_snapshot, reason)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [request.clientId, message.sender_client_id, source, messageId, message.message_text, reason],
       )
-      response.status(201).json({ status: 'reported' })
+      const isNewReport = report.affectedRows === 1
+      let reportId = report.insertId
+      if (!isNewReport) {
+        const [existingReports] = await connection.execute(
+          `SELECT report_id FROM message_reports
+           WHERE reporter_client_id = ? AND source = ? AND message_id = ?
+           LIMIT 1`,
+          [request.clientId, source, messageId],
+        )
+        reportId = existingReports[0]?.report_id
+        if (!reportId) throw new Error('The existing message report could not be found.')
+      }
+
+      const reportedId = Number(message.sender_client_id)
+      const cooldownSeconds = REPORT_MESSAGE_COOLDOWN_HOURS * 60 * 60
+      await connection.execute(
+        `INSERT INTO report_message_restrictions
+           (reporter_client_id, reported_client_id, expires_at)
+         SELECT reporter_client_id, reported_client_id,
+                DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(
+                  0, ${cooldownSeconds} - TIMESTAMPDIFF(SECOND, created_at, CURRENT_TIMESTAMP())
+                ) SECOND)
+         FROM message_reports
+         WHERE report_id = ? AND created_at > CURRENT_TIMESTAMP() - INTERVAL ${REPORT_MESSAGE_COOLDOWN_HOURS} HOUR
+         ON DUPLICATE KEY UPDATE expires_at = GREATEST(expires_at, VALUES(expires_at))`,
+        [reportId],
+      )
+      const [activeRestrictions] = await connection.execute(
+        `SELECT expires_at,
+                GREATEST(0, TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), expires_at)) AS minutes_remaining
+         FROM report_message_restrictions
+         WHERE reporter_client_id = ? AND reported_client_id = ?
+           AND expires_at > UTC_TIMESTAMP()
+         LIMIT 1`,
+        [request.clientId, reportedId],
+      )
+      const remainingMinutes = Number(activeRestrictions[0]?.minutes_remaining ?? 0)
+      const remainingHours = Math.ceil(remainingMinutes / 60)
+      const warningMessage = activeRestrictions[0]
+        ? `We are reviewing a message you sent. For safety, messaging the person who reported it is paused for up to ${remainingHours} ${remainingHours === 1 ? 'hour' : 'hours'}. The pause lifts automatically. Please review Spontii’s community guidelines.`
+        : 'A message you sent was reported and shared with Spontii for review. Please review Spontii’s community guidelines.'
+      const [notification] = await connection.execute(
+        `INSERT IGNORE INTO notifications
+           (client_id, type, title, message, route, dedupe_key)
+         VALUES (?, 'report_warning', 'A message you sent was reported', ?, NULL, ?)`,
+        [reportedId, warningMessage, `report-warning:${reportId}`],
+      )
+      await connection.commit()
+
+      if (notification.affectedRows === 1) {
+        emitToUsers([reportedId], 'notification:new', {
+          id: String(notification.insertId),
+          type: 'report_warning',
+          title: 'A message you sent was reported',
+          message: warningMessage,
+          route: null,
+          readAt: null,
+          createdAt: new Date().toISOString(),
+        })
+      }
+      notifyInBackground(
+        notifyDirectAccess(pool, request.clientId, reportedId),
+        'update direct message access after a message report',
+      )
+      if (activeRestrictions[0] && source === 'event') {
+        emitToUsers([reportedId], 'thread:access', {
+          kind: 'event',
+          threadId: message.public_id,
+          canSend: false,
+          reason: 'report_cooldown',
+        })
+      }
+      response.status(201).json({ status: isNewReport ? 'reported' : 'already_reported' })
     } catch (error) {
+      if (connection) await connection.rollback()
       next(error)
+    } finally {
+      connection?.release()
     }
   })
 }

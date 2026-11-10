@@ -808,80 +808,82 @@ export default function Profile() {
 
       </section>
 
+      {/* Temporarily disabled: restore this block to show the profile welcome dialog.
       {welcomeOpen && profile.profileCompletion < 100 && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6"
-            onMouseDown={(event) =>
-              event.target === event.currentTarget && closeWelcome()
-            }
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6"
+          onMouseDown={(event) =>
+            event.target === event.currentTarget && closeWelcome()
+          }
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-welcome-title"
+            className="animate-rise-in relative my-auto max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl border border-border bg-surface-2 p-7 shadow-2xl"
           >
-            <section
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="profile-welcome-title"
-              className="animate-rise-in relative my-auto max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl border border-border bg-surface-2 p-7 shadow-2xl"
+            <button
+              type="button"
+              onClick={() => closeWelcome()}
+              aria-label="Close profile reminder"
+              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-text/5 hover:text-text"
             >
-              <button
-                type="button"
-                onClick={() => closeWelcome()}
-                aria-label="Close profile reminder"
-                className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-text/5 hover:text-text"
-              >
-                <CloseIcon className="h-4 w-4" />
-              </button>
+              <CloseIcon className="h-4 w-4" />
+            </button>
 
-              <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-mint-soft text-2xl">
-                ✨
+            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-mint-soft text-2xl">
+              ✨
+            </div>
+
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-mint">
+              Welcome to Spontiii
+            </p>
+            <h2
+              id="profile-welcome-title"
+              className="mt-2 pr-7 text-2xl font-extrabold tracking-tight"
+            >
+              Arigato, matee!
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-muted">
+              Your account is ready. Complete your profile so people can get
+              to know the real you and feel confident making plans together.
+            </p>
+
+            <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-semibold">Your profile</span>
+                <span className="font-extrabold text-mint">{profile.profileCompletion}%</span>
               </div>
-
-              <p className="text-xs font-bold uppercase tracking-[0.14em] text-mint">
-                Welcome to Spontiii
-              </p>
-              <h2
-                id="profile-welcome-title"
-                className="mt-2 pr-7 text-2xl font-extrabold tracking-tight"
-              >
-                Arigato, matee!
-              </h2>
-              <p className="mt-3 text-sm leading-relaxed text-muted">
-                Your account is ready. Complete your profile so people can get
-                to know the real you and feel confident making plans together.
-              </p>
-
-              <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-semibold">Your profile</span>
-                  <span className="font-extrabold text-mint">{profile.profileCompletion}%</span>
-                </div>
-                <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-3">
-                  <div
-                    className="h-full rounded-full bg-mint transition-all"
-                    style={{ width: `${profile.profileCompletion}%` }}
-                  />
-                </div>
-                <p className="mt-3 text-xs leading-relaxed text-muted">
-                  Add a photo, city, tagline, bio, and interests. Profile
-                  milestones can earn up to 120 Spontii Score.
-                </p>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-3">
+                <div
+                  className="h-full rounded-full bg-mint transition-all"
+                  style={{ width: `${profile.profileCompletion}%` }}
+                />
               </div>
+              <p className="mt-3 text-xs leading-relaxed text-muted">
+                Add a photo, city, tagline, bio, and interests. Profile
+                milestones can earn up to 120 Spontii Score.
+              </p>
+            </div>
 
-              <button
-                type="button"
-                onClick={() => closeWelcome(true)}
-                className="mt-6 flex h-12 w-full items-center justify-center rounded-xl bg-mint px-4 text-sm font-bold text-bg transition-colors hover:bg-mint/90"
-              >
-                Complete my profile
-              </button>
-              <button
-                type="button"
-                onClick={() => closeWelcome()}
-                className="mt-3 flex h-10 w-full items-center justify-center text-sm font-semibold text-muted hover:text-text"
-              >
-                I’ll do this later
-              </button>
-            </section>
-          </div>
-        )}
+            <button
+              type="button"
+              onClick={() => closeWelcome(true)}
+              className="mt-6 flex h-12 w-full items-center justify-center rounded-xl bg-mint px-4 text-sm font-bold text-bg transition-colors hover:bg-mint/90"
+            >
+              Complete my profile
+            </button>
+            <button
+              type="button"
+              onClick={() => closeWelcome()}
+              className="mt-3 flex h-10 w-full items-center justify-center text-sm font-semibold text-muted hover:text-text"
+            >
+              I’ll do this later
+            </button>
+          </section>
+        </div>
+      )}
+      */}
 
       {/* ==================================================
           EDIT PROFILE MODAL

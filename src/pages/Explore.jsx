@@ -2,11 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 
-import { categories, vibes } from "../data/mockData";
-
 import { useApp } from "../context/AppContext";
 
-import AvatarStack from "../components/AvatarStack";
 import EventPlanIdeas from "../components/EventPlanIdeas";
 import { useAuth } from "../context/AuthContext";
 
@@ -67,11 +64,6 @@ export default function Explore() {
   const [privateCategoryFilter, setPrivateCategoryFilter] = useState(
     searchParams.get("category") ?? "Everything",
   );
-  // Core Utilities retained from structural layout context
-  const [vibe, setVibe] = useState("All vibes");
-  const [verifiedOnly, setVerifiedOnly] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-
   /* =========================================================
      PUBLIC CAROUSEL CONTROLS
   ========================================================= */
@@ -100,16 +92,6 @@ export default function Explore() {
   const [privateVisibleCount, setPrivateVisibleCount] =
     useState(PRIVATE_INITIAL);
   const privateLoaderRef = useRef(null);
-
-  /* =========================================================
-     ACTIVE GLOBAL ACCELERATOR FILTER METRIC COUNTS
-  ========================================================= */
-
-  const activeFilterCount =
-    (privateCategoryFilter !== "Everything" ? 1 : 0) +
-    (publicDateFilter !== "All plans" ? 1 : 0) +
-    (vibe !== "All vibes" ? 1 : 0) +
-    (verifiedOnly ? 1 : 0);
 
   /* =========================================================
      HYBRID FILTER PROCESSING PIPELINES (DECOUPLED DESIGN)
@@ -163,6 +145,16 @@ export default function Explore() {
     isFromHomeCategory,
     cityFilter,
   ]);
+
+  const privateCategories = useMemo(() => {
+    const matchingCityActivities = databaseActivities.filter(
+      (activity) =>
+        isPrivateActivity(activity) &&
+        (!cityFilter ||
+          activity.city?.toLocaleLowerCase() === cityFilter.toLocaleLowerCase()),
+    );
+    return [...new Set(matchingCityActivities.map((activity) => activity.category).filter(Boolean))];
+  }, [databaseActivities, cityFilter]);
 
   // 2. Compute Private Activities (Ignores Date filter UNLESS navigating from home page)
   const privateActivities = useMemo(() => {
@@ -268,13 +260,6 @@ export default function Explore() {
     };
   }, [publicActivities]);
 
-  function clearFilters() {
-    setPublicDateFilter("All plans");
-    setPrivateCategoryFilter("Everything");
-    setVibe("All vibes");
-    setVerifiedOnly(false);
-  }
-
   return (
     <div className="wide-screen-container mx-auto max-w-[1600px] space-y-12 px-5 py-8 sm:px-6 lg:space-y-14">
       {/* =====================================================
@@ -288,8 +273,23 @@ export default function Explore() {
           Find something to do.
         </h1>
         <p className="mt-2 text-sm text-muted sm:text-base">
-          Discover activities happening around you.
+          {cityFilter
+            ? `Discover activities happening in ${cityFilter}.`
+            : "Discover current activities around you."}
         </p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <span className="rounded-full border border-border bg-surface-2 px-3 py-1.5 text-xs font-semibold text-muted">
+            {publicActivities.length} public
+          </span>
+          <span className="rounded-full border border-border bg-surface-2 px-3 py-1.5 text-xs font-semibold text-muted">
+            {privateActivities.length} private
+          </span>
+          {query.trim() && (
+            <span className="rounded-full border border-mint/30 bg-mint/10 px-3 py-1.5 text-xs font-semibold text-mint">
+              “{query.trim()}”
+            </span>
+          )}
+        </div>
       </section>
 
       {/* =====================================================
@@ -299,7 +299,7 @@ export default function Explore() {
         <div className="space-y-4">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.12em] text-mint">
-              Public
+              Public · {publicActivities.length}
             </p>
             <h2 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl">
               Public activities
@@ -483,7 +483,7 @@ export default function Explore() {
         <div className="space-y-4">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.12em] text-mint">
-              Private Feed
+              Private Feed · {privateActivities.length}
             </p>
             <h2 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl">
               Exclusive activities
@@ -492,14 +492,13 @@ export default function Explore() {
 
           {/* EYE-CATCHING STRETCHED CATEGORY OPTION PANEL */}
           <div className="w-full rounded-2xl bg-surface-2 p-1.5 border border-border/60 shadow-md">
-            <div className="flex flex-wrap sm:flex-nowrap items-stretch sm:items-center justify-between gap-1 w-full">
-              {["Everything", "Food", "Social", "Outdoors", "Sports"].map(
-                (cat) => (
+            <div className="scrollbar-none flex items-stretch gap-1 overflow-x-auto">
+              {["Everything", ...privateCategories].map((cat) => (
                   <button
                     key={cat}
                     type="button"
                     onClick={() => setPrivateCategoryFilter(cat)}
-                    className={`flex-1 text-center py-1.5 text-sm font-black tracking-wide rounded-xl transition-all ${
+                    className={`shrink-0 rounded-xl px-4 py-2.5 text-sm font-bold transition-all ${
                       privateCategoryFilter === cat
                         ? "bg-mint text-bg shadow-md"
                         : "text-muted hover:text-text hover:bg-bg/40"
@@ -507,8 +506,7 @@ export default function Explore() {
                   >
                     {cat}
                   </button>
-                ),
-              )}
+                ))}
             </div>
           </div>
         </div>

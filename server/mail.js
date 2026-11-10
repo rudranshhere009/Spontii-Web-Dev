@@ -2,7 +2,30 @@ import nodemailer from 'nodemailer'
 
 let transporter
 
+/*
+ * MAIL_TRANSPORT=console prints emails to the server log instead of sending
+ * them, so OTP flows work locally without Gmail credentials. Never in production.
+ */
+export function assertMailConfig() {
+  if (process.env.MAIL_TRANSPORT === 'console' && process.env.NODE_ENV === 'production') {
+    throw new Error('MAIL_TRANSPORT=console is for local development only. Remove it in production.')
+  }
+}
+
+export function mailConfigured() {
+  return process.env.MAIL_TRANSPORT === 'console' ||
+    Boolean(process.env.MAIL_USER && process.env.MAIL_APP_PASSWORD)
+}
+
 function getTransporter() {
+  if (process.env.MAIL_TRANSPORT === 'console') {
+    assertMailConfig()
+    return {
+      async sendMail(message) {
+        console.log(`[DEV MAIL] to=${message.to} subject="${message.subject}"`)
+      },
+    }
+  }
   if (!transporter) {
     const user = process.env.MAIL_USER
     const pass = process.env.MAIL_APP_PASSWORD
@@ -28,20 +51,27 @@ function escapeHtml(value) {
 
 function otpEmailHtml({ name, otp, minutes, purpose }) {
   const firstName = escapeHtml(name.trim().split(/\s+/)[0] || 'there')
-  const isLogin = purpose === 'login'
-  const title = isLogin ? 'Your Spontii login code' : 'Verify your email'
-  const introduction = isLogin
-    ? 'Use this one-time code to log in to your Spontii account.'
-    : "You're one step away: enter the code below to confirm your email and create your account."
+  const isAdmin = purpose === 'admin_login'
+  const isLogin = purpose === 'login' || isAdmin
+  const title = isAdmin
+    ? 'Your Spontii Admin login code'
+    : isLogin ? 'Your Spontii login code' : 'Verify your email'
+  const introduction = isAdmin
+    ? 'Use this one-time code to finish signing in to the Spontii admin portal.'
+    : isLogin
+      ? 'Use this one-time code to log in to your Spontii account.'
+      : "You're one step away: enter the code below to confirm your email and create your account."
   const greeting = isLogin
     ? `Hi ${firstName}, here's your login code.`
     : `Hi ${firstName}, welcome to Spontii 👋`
   const preview = isLogin
-    ? `Your Spontii login code is ${otp}. It expires in ${minutes} minutes.`
+    ? `Your ${isAdmin ? 'Spontii Admin' : 'Spontii'} login code is ${otp}. It expires in ${minutes} minutes.`
     : `Your Spontii verification code is ${otp}. It expires in ${minutes} minutes.`
-  const closing = isLogin
-    ? "Didn't request a login code? You can safely ignore this email."
-    : "Didn't try to sign up? You can safely ignore this email, and no account will be created."
+  const closing = isAdmin
+    ? "Didn't try to sign in? Someone may know your admin password. Change it right away."
+    : isLogin
+      ? "Didn't request a login code? You can safely ignore this email."
+      : "Didn't try to sign up? You can safely ignore this email, and no account will be created."
   const digits = otp
     .split('')
     .map(
@@ -101,10 +131,13 @@ function otpEmailHtml({ name, otp, minutes, purpose }) {
 
 export async function sendOtpEmail({ to, name, otp, minutes, purpose = 'verification' }) {
   const fromName = process.env.MAIL_FROM_NAME || 'Spontii'
-  const isLogin = purpose === 'login'
-  const subject = isLogin
-    ? `${otp} is your Spontii login code`
-    : `${otp} is your Spontii verification code`
+  const isAdmin = purpose === 'admin_login'
+  const isLogin = purpose === 'login' || isAdmin
+  const subject = isAdmin
+    ? `${otp} is your Spontii Admin login code`
+    : isLogin
+      ? `${otp} is your Spontii login code`
+      : `${otp} is your Spontii verification code`
 
   await getTransporter().sendMail({
     from: `"${fromName}" <${process.env.MAIL_USER}>`,
